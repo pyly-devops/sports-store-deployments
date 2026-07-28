@@ -1,0 +1,16 @@
+# Interview Prep Log
+
+Master log of what we built and why, kept up to date after each milestone. Entry format:
+
+```
+## Milestone N — <name>
+**What we built:** ...
+**Why:** ... (+ the alternative we didn't pick and the tradeoff)
+**Likely interview questions:**
+1. Q: ...
+   A: ...
+2. Q: ...
+   A: ...
+```
+
+No milestones completed yet — this log starts filling in once work begins.
