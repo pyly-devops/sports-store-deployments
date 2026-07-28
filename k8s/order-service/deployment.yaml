@@ -1,0 +1,24 @@
+# TODO: apiVersion (apps/v1) and kind (Deployment).
+
+# TODO: metadata.name — e.g. order-service.
+
+# TODO: spec.replicas — start with 1.
+
+# TODO: spec.selector.matchLabels and spec.template.metadata.labels — pick a
+#   label (e.g. app: order-service), same key/value in both places.
+
+# TODO: spec.template.spec.containers[0]
+#   - name: order-service
+#   - image: the image you built for this service in Stage 2. No "latest".
+#   - ports.containerPort: check services/order-service/Dockerfile's start
+#     command TODO for the port this service listens on.
+#   - envFrom:
+#     - secret: JWT_SECRET, MONGO_URI (see ../secrets/app-secrets.yaml)
+#     - configMap: CART_URL, CATALOG_URL, PAYMENT_URL, SHIPPING_FLAT_RATE,
+#       FREE_SHIPPING_THRESHOLD (see ../configmaps/order-config.yaml).
+#       order-service is the checkout orchestrator — it calls cart, catalog,
+#       and payment over HTTP, so all three URLs must point at the exact
+#       Service names + ports you gave those services, not "localhost".
+#   - readinessProbe / livenessProbe: check services/order-service/main.py
+#     for its health endpoint and probe it.
+#   - resources.requests/limits: set something reasonable.

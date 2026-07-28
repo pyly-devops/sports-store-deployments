@@ -1,0 +1,5 @@
+# TODO: apiVersion (v1) and kind (Namespace).
+
+# TODO: metadata.name — use "sports-store". Later stages (Helm chart, EKS
+#   deploy, CI/CD, Argo CD, observability) all assume this exact namespace in
+#   their example commands — don't pick a different one here.

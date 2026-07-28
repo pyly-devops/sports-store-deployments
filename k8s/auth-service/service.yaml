@@ -1,0 +1,17 @@
+# TODO: apiVersion (v1) and kind (Service).
+
+# TODO: metadata.name — this one is NOT your choice. The gateway proxies
+#   /api/auth/* to a specific hostname over cluster DNS — read
+#   gateway/nginx.conf's location block for /api/auth/ and name this Service
+#   to match exactly (see ../README.md, "Internal service DNS"). Get this
+#   wrong and the gateway will 502 on every /api/auth/* request with a DNS
+#   resolution failure in its logs.
+
+# TODO: spec.selector — must match the labels on the auth-service Deployment's
+#   pod template (deployment.yaml), not this Service's own metadata.
+
+# TODO: spec.ports — expose port 80 (or whatever's conventional for you)
+#   targeting the container port auth-service actually listens on (see
+#   deployment.yaml's containerPort TODO). No `type:` needed — default
+#   ClusterIP is correct; this Service is never meant to be reachable from
+#   outside the cluster.

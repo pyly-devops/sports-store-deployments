@@ -1,0 +1,9 @@
+# TODO: apiVersion (v1) and kind (ConfigMap).
+
+# TODO: metadata.name — e.g. payment-config.
+
+# TODO: data — non-secret config for payment-service. See
+#   services/payment-service/.env.example for what it needs beyond
+#   MONGO_URI/JWT_SECRET (those two are secrets, defined in
+#   ../secrets/app-secrets.yaml instead):
+#   - PAYMENT_FAILURE_SUFFIX

@@ -1,0 +1,12 @@
+# TODO: apiVersion (v1) and kind (ConfigMap).
+
+# TODO: metadata.name — e.g. cart-config.
+
+# TODO: data — non-secret config for cart-service. See
+#   services/cart-service/.env.example for what it needs beyond
+#   MONGO_URI/JWT_SECRET (those two are secrets, defined in
+#   ../secrets/app-secrets.yaml instead):
+#   - CATALOG_URL: must point at catalog-service's in-cluster address (the
+#     Service name you gave it in ../catalog-service/service.yaml, plus its
+#     port) — NOT the localhost value from .env.example, that one's only for
+#     running the service outside Docker/k8s.
