@@ -1,0 +1,22 @@
+# TODO: apiVersion (v1) and kind (Service).
+
+# TODO: metadata.name — your choice, e.g. gateway. Nothing else in the
+#   cluster needs to resolve this Service by name (unlike the backend
+#   Services), since it's the entry point, not a dependency of anything else.
+
+# TODO: spec.selector — must match the gateway Deployment's pod-template
+#   labels (deployment.yaml).
+
+# TODO: spec.type — this is the ONE Service in this directory that should NOT
+#   default to ClusterIP. Pick NodePort (works on any local cluster,
+#   including kind/minikube) or LoadBalancer (if your cluster provisions
+#   one) so it's reachable from outside the cluster. Document which you
+#   picked and how to actually reach it (e.g. `minikube service gateway` or
+#   the NodePort + node IP).
+
+# TODO: spec.ports — port 80 targeting the gateway container's port 80.
+
+# Alternative: instead of a NodePort/LoadBalancer Service, you may expose
+# this via an Ingress resource + ingress controller if your cluster has one
+# installed. Either satisfies Stage 3's "Configure Ingress (or NGINX
+# Gateway)" requirement — pick one and document why.

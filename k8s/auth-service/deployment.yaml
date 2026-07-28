@@ -1,0 +1,32 @@
+# TODO: apiVersion (apps/v1) and kind (Deployment).
+
+# TODO: metadata.name — e.g. auth-service. This is just the Deployment's own
+#   name; it does NOT have to match the Service name in service.yaml (that one
+#   is constrained by gateway/nginx.conf — see ../README.md).
+
+# TODO: spec.replicas — start with 1.
+
+# TODO: spec.selector.matchLabels and spec.template.metadata.labels — pick a
+#   label (e.g. app: auth-service) and use the exact same key/value in both
+#   places. A Deployment whose selector doesn't match its own pod template
+#   labels will fail to create pods.
+
+# TODO: spec.template.spec.containers[0]
+#   - name: auth-service
+#   - image: the image you built for this service in Stage 2. For a local
+#     cluster (kind/minikube) make sure the image is actually reachable —
+#     either loaded into the cluster's local registry or pushed somewhere the
+#     cluster can pull from. Don't use "latest".
+#   - ports.containerPort: check services/auth-service/Dockerfile's start
+#     command TODO for the port this service actually listens on.
+#   - envFrom: this service needs JWT_SECRET and MONGO_URI (secret) and
+#     ACCESS_TOKEN_EXPIRE_MINUTES (not secret) — see
+#     services/auth-service/.env.example for the full list, and
+#     ../secrets/app-secrets.yaml / ../configmaps/auth-config.yaml for where
+#     they're defined here.
+#   - readinessProbe / livenessProbe: this service exposes a health endpoint
+#     — check services/auth-service/main.py for the exact path. Use it for
+#     both probes so Kubernetes doesn't send traffic to (or keeps restarting)
+#     a pod that can't reach MongoDB yet.
+#   - resources.requests/limits: set something reasonable (e.g. 100m CPU /
+#     128Mi memory requests) rather than leaving them unset.

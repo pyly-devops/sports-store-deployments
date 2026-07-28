@@ -1,0 +1,11 @@
+# TODO: apiVersion (v1) and kind (Service).
+
+# TODO: metadata.name — check gateway/nginx.conf's /api/orders location block
+#   for the exact upstream hostname it expects, and match it (see
+#   ../README.md).
+
+# TODO: spec.selector — must match order-service's Deployment pod-template
+#   labels (deployment.yaml).
+
+# TODO: spec.ports — expose a port targeting order-service's container port
+#   (see deployment.yaml). Default ClusterIP.

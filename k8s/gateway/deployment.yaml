@@ -1,0 +1,24 @@
+# TODO: apiVersion (apps/v1) and kind (Deployment).
+
+# TODO: metadata.name — e.g. gateway.
+
+# TODO: spec.replicas — start with 1.
+
+# TODO: spec.selector.matchLabels and spec.template.metadata.labels — pick a
+#   label (e.g. app: gateway), same key/value in both places.
+
+# TODO: spec.template.spec.containers[0]
+#   - name: gateway
+#   - image: the image you built from gateway/Dockerfile in Stage 2 (the one
+#     that bundles the built frontend + nginx.conf). No "latest".
+#   - ports.containerPort: 80 (nginx listens on 80 — see gateway/nginx.conf).
+#   - no envFrom needed — the gateway is static nginx config + a prebuilt
+#     frontend bundle, it doesn't read environment variables.
+#   - readinessProbe / livenessProbe: an httpGet on `/` at port 80 is enough
+#     — nginx serving the frontend's index.html is a reasonable proxy for
+#     "this pod is up".
+#   - resources.requests/limits: set something reasonable.
+
+# Note: this Deployment does NOT need to wait on the 5 backend services to be
+# ready — nginx will just return upstream errors on /api/* until they are.
+# Nothing here depends on backend Service names except at request time.

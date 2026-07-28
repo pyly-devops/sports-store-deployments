@@ -1,0 +1,9 @@
+# TODO: apiVersion (v1) and kind (ConfigMap).
+
+# TODO: metadata.name — e.g. auth-config.
+
+# TODO: data — non-secret config for auth-service. See
+#   services/auth-service/.env.example for what it needs beyond
+#   MONGO_URI/JWT_SECRET (those two are secrets, defined in
+#   ../secrets/app-secrets.yaml instead):
+#   - ACCESS_TOKEN_EXPIRE_MINUTES

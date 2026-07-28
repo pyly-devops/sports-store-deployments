@@ -1,0 +1,25 @@
+# TODO: apiVersion (apps/v1) and kind (Deployment).
+
+# TODO: metadata.name — e.g. cart-service.
+
+# TODO: spec.replicas — start with 1.
+
+# TODO: spec.selector.matchLabels and spec.template.metadata.labels — pick a
+#   label (e.g. app: cart-service), same key/value in both places.
+
+# TODO: spec.template.spec.containers[0]
+#   - name: cart-service
+#   - image: the image you built for this service in Stage 2. No "latest".
+#   - ports.containerPort: check services/cart-service/Dockerfile's start
+#     command TODO for the port this service listens on.
+#   - envFrom:
+#     - secret: JWT_SECRET, MONGO_URI (see ../secrets/app-secrets.yaml)
+#     - configMap: CATALOG_URL (see ../configmaps/cart-config.yaml) — this is
+#       how cart-service finds catalog-service. It must point at the exact
+#       Service name + port you gave catalog-service in
+#       ../catalog-service/service.yaml, not at "localhost" and not at the
+#       value in services/cart-service/.env.example (that one's for running
+#       outside Docker/k8s).
+#   - readinessProbe / livenessProbe: check services/cart-service/main.py for
+#     its health endpoint and probe it.
+#   - resources.requests/limits: set something reasonable.

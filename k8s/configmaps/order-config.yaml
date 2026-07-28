@@ -1,0 +1,14 @@
+# TODO: apiVersion (v1) and kind (ConfigMap).
+
+# TODO: metadata.name — e.g. order-config.
+
+# TODO: data — non-secret config for order-service. See
+#   services/order-service/.env.example for what it needs beyond
+#   MONGO_URI/JWT_SECRET (those two are secrets, defined in
+#   ../secrets/app-secrets.yaml instead):
+#   - CART_URL, CATALOG_URL, PAYMENT_URL: each must point at that service's
+#     in-cluster Service name + port (see ../cart-service/service.yaml,
+#     ../catalog-service/service.yaml, ../payment-service/service.yaml) —
+#     NOT the localhost values from .env.example.
+#   - SHIPPING_FLAT_RATE
+#   - FREE_SHIPPING_THRESHOLD

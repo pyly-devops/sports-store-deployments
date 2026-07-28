@@ -1,0 +1,21 @@
+# TODO: apiVersion (apps/v1) and kind (Deployment).
+
+# TODO: metadata.name — e.g. catalog-service.
+
+# TODO: spec.replicas — start with 1.
+
+# TODO: spec.selector.matchLabels and spec.template.metadata.labels — pick a
+#   label (e.g. app: catalog-service), same key/value in both places.
+
+# TODO: spec.template.spec.containers[0]
+#   - name: catalog-service
+#   - image: the image you built for this service in Stage 2. No "latest".
+#   - ports.containerPort: check services/catalog-service/Dockerfile's start
+#     command TODO for the port this service listens on.
+#   - envFrom: this service needs JWT_SECRET and MONGO_URI — both secret, see
+#     services/catalog-service/.env.example and ../secrets/app-secrets.yaml.
+#     Unlike auth/cart/order/payment, catalog-service has no non-secret
+#     config, so it doesn't need a ConfigMap.
+#   - readinessProbe / livenessProbe: check services/catalog-service/main.py
+#     for its health endpoint and probe it.
+#   - resources.requests/limits: set something reasonable.

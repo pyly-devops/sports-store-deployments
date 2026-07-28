@@ -1,0 +1,12 @@
+# TODO: apiVersion (v1) and kind (Service).
+
+# TODO: metadata.name — check gateway/nginx.conf: TWO location blocks
+#   (/api/products and /api/internal/) both proxy to the same upstream
+#   hostname, because both routes are served by catalog-service. Name this
+#   Service to match that hostname exactly (see ../README.md).
+
+# TODO: spec.selector — must match catalog-service's Deployment pod-template
+#   labels (deployment.yaml).
+
+# TODO: spec.ports — expose a port targeting catalog-service's container port
+#   (see deployment.yaml). Default ClusterIP — not externally reachable.

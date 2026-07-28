@@ -1,0 +1,19 @@
+# This ConfigMap should be GENERATED from seed/init-mongo.js, not hand-typed
+# — the script is already provided and complete, don't retype or edit it here.
+#
+# TODO: generate this file's real content, e.g.:
+#
+#   kubectl create configmap mongo-init \
+#     --namespace sports-store \
+#     --from-file=init-mongo.js=seed/init-mongo.js \
+#     --dry-run=client -o yaml > k8s/mongodb/init-configmap.yaml
+#
+# Then commit the generated output in place of this placeholder — it should
+# end up as a ConfigMap named mongo-init with one data key, init-mongo.js,
+# containing the full script content.
+#
+# Whatever generator you use, the resulting key name (init-mongo.js) matters:
+# it's used as the filename when this ConfigMap gets mounted into
+# /docker-entrypoint-initdb.d/ in ../mongodb/values.yaml — MongoDB only picks
+# up *.js/*.sh files in that directory, and the filename it sees is whatever
+# key you mount, not the original file's path.

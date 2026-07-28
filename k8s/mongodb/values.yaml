@@ -1,0 +1,38 @@
+# Values for the Bitnami MongoDB Helm chart (installed separately from the
+# app — see ../README.md for the install command). This file only configures
+# MongoDB itself; it is not part of the app Helm chart (that's Stage 4).
+#
+# Chart docs: https://github.com/bitnami/charts/tree/main/bitnami/mongodb
+
+# TODO: auth — MongoDB's built-in auth block.
+#   - auth.enabled: true
+#   - auth.rootUser / auth.rootPassword: match MONGO_ROOT_USERNAME /
+#     MONGO_ROOT_PASSWORD in ../secrets/app-secrets.yaml exactly, or (better)
+#     reference that Secret directly with auth.existingSecret instead of
+#     duplicating the password in plaintext here — check the chart's README
+#     for the exact key names it expects in an existingSecret.
+
+# TODO: persistence — persistent storage for MongoDB's data directory.
+#   - persistence.enabled: true
+#   - persistence.size: e.g. 1Gi is plenty for course data.
+#   Without this, MongoDB's data lives in the pod's ephemeral filesystem and
+#   is gone the moment the pod is rescheduled — Stage 3's success criteria
+#   explicitly require data to survive pod restarts.
+
+# TODO: initdbScripts / extraVolumes+extraVolumeMounts — wiring the seed
+# script in. Two ways to do this with this chart, pick one and document why:
+#   1. `initdbScripts` value: some Bitnami chart versions accept a map of
+#      filename -> script content directly in values, which the chart mounts
+#      for you.
+#   2. `extraVolumes` (referencing the mongo-init ConfigMap from
+#      ./init-configmap.yaml) + `extraVolumeMounts` mounting it read-only at
+#      /docker-entrypoint-initdb.d/init-mongo.js.
+#   Check the chart version you're actually installing — the exact value
+#   names have changed between Bitnami chart versions, don't assume.
+#   Whichever you pick, verify it only runs once: MongoDB's
+#   docker-entrypoint-initdb.d scripts only execute against an empty data
+#   directory, so a second `helm upgrade` against an existing PVC must NOT
+#   re-run seed/init-mongo.js. Test this explicitly (see Stage 3 success
+#   criteria) — don't just assume it.
+
+# TODO: resources — set requests/limits rather than leaving them unset.
