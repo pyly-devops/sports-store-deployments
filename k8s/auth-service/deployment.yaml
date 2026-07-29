@@ -1,32 +1,114 @@
-# TODO: apiVersion (apps/v1) and kind (Deployment).
-
-# TODO: metadata.name — e.g. auth-service. This is just the Deployment's own
-#   name; it does NOT have to match the Service name in service.yaml (that one
-#   is constrained by gateway/nginx.conf — see ../README.md).
-
-# TODO: spec.replicas — start with 1.
-
-# TODO: spec.selector.matchLabels and spec.template.metadata.labels — pick a
-#   label (e.g. app: auth-service) and use the exact same key/value in both
-#   places. A Deployment whose selector doesn't match its own pod template
-#   labels will fail to create pods.
-
-# TODO: spec.template.spec.containers[0]
-#   - name: auth-service
-#   - image: the image you built for this service in Stage 2. For a local
-#     cluster (kind/minikube) make sure the image is actually reachable —
-#     either loaded into the cluster's local registry or pushed somewhere the
-#     cluster can pull from. Don't use "latest".
-#   - ports.containerPort: check services/auth-service/Dockerfile's start
-#     command TODO for the port this service actually listens on.
-#   - envFrom: this service needs JWT_SECRET and MONGO_URI (secret) and
-#     ACCESS_TOKEN_EXPIRE_MINUTES (not secret) — see
-#     services/auth-service/.env.example for the full list, and
-#     ../secrets/app-secrets.yaml / ../configmaps/auth-config.yaml for where
-#     they're defined here.
-#   - readinessProbe / livenessProbe: this service exposes a health endpoint
-#     — check services/auth-service/main.py for the exact path. Use it for
-#     both probes so Kubernetes doesn't send traffic to (or keeps restarting)
-#     a pod that can't reach MongoDB yet.
-#   - resources.requests/limits: set something reasonable (e.g. 100m CPU /
-#     128Mi memory requests) rather than leaving them unset.
+# auth-service -- issues the JWTs the other four services verify.
+#
+# This file is the reference copy: catalog, cart, order and payment repeat this
+# exact shape and differ only in image, env, and which ConfigMap they read. The
+# repetition is the point of Milestone 3 -- one Helm template with a `range`
+# collapses all five into a single file.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  labels:
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: sports-store
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      # A Deployment's selector is IMMUTABLE after creation, so it is kept to
+      # one short, stable key. The richer app.kubernetes.io/* labels above are
+      # free to change; this one is not.
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+        app.kubernetes.io/name: auth-service
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: sports-store
+    spec:
+      containers:
+        - name: auth-service
+          # <semver>-<7-char-git-hash>, never "latest": the tag names the exact
+          # commit that produced the image, so a running pod can always be
+          # traced back to source. Built and loaded by `make k8s-images` in
+          # cloudcart-workspace.
+          image: sports-store/auth-service:0.1.0-e265b9a
+          # The image only exists inside the minikube node's Docker daemon --
+          # there is no registry to pull it from yet. Always would make the
+          # kubelet try Docker Hub and fail with ErrImagePull. Milestone 5
+          # replaces this with a real ECR reference.
+          imagePullPolicy: IfNotPresent
+          ports:
+            # Named so the probes and the Service can target "http" instead of
+            # repeating the number -- change the port here and nothing else
+            # needs editing.
+            - name: http
+              containerPort: 8000
+          env:
+            # Mapped one key at a time with secretKeyRef rather than
+            # `envFrom: secretRef: app-secrets`. envFrom would inject all five
+            # services' connection strings into this pod; least privilege says
+            # auth-service should only ever see its own.
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: AUTH_MONGO_URI
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: JWT_SECRET
+          envFrom:
+            # Non-secret config is bulk-loaded: there is nothing to protect,
+            # and a per-service ConfigMap already scopes it correctly.
+            - configMapRef:
+                name: auth-config
+          readinessProbe:
+            # Gates whether the Service sends traffic here. Honest caveat:
+            # /health returns a static {"status": "ok"} and does NOT check
+            # MongoDB, so readiness proves the process is serving, not that the
+            # database is reachable. Making it a real dependency check is a
+            # deliberate later improvement, not an oversight.
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            # Restarts the container if it wedges. Slower and more forgiving
+            # than readiness on purpose -- a liveness probe that is too eager
+            # turns a slow moment into a restart loop.
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            # requests drive scheduling; limits cap the blast radius of one
+            # misbehaving pod. Unset requests would let the scheduler pack the
+            # node until everything degrades at once.
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            # The Dockerfile already does `USER appuser`, but the kubelet
+            # cannot resolve a username to a UID -- runAsNonRoot alone would
+            # fail with "container has runAsNonRoot and image has non-numeric
+            # user". runAsUser pins the numeric UID the Dockerfile created.
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            # readOnlyRootFilesystem is intentionally left off: uvicorn and
+            # Python write to /tmp. Enabling it needs an emptyDir mounted
+            # there -- worth doing, deferred to keep this milestone honest
+            # about what was actually tested.

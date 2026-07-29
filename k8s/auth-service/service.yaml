@@ -1,17 +1,37 @@
-# TODO: apiVersion (v1) and kind (Service).
-
-# TODO: metadata.name — this one is NOT your choice. The gateway proxies
-#   /api/auth/* to a specific hostname over cluster DNS — read
-#   gateway/nginx.conf's location block for /api/auth/ and name this Service
-#   to match exactly (see ../README.md, "Internal service DNS"). Get this
-#   wrong and the gateway will 502 on every /api/auth/* request with a DNS
-#   resolution failure in its logs.
-
-# TODO: spec.selector — must match the labels on the auth-service Deployment's
-#   pod template (deployment.yaml), not this Service's own metadata.
-
-# TODO: spec.ports — expose port 80 (or whatever's conventional for you)
-#   targeting the container port auth-service actually listens on (see
-#   deployment.yaml's containerPort TODO). No `type:` needed — default
-#   ClusterIP is correct; this Service is never meant to be reachable from
-#   outside the cluster.
+# Stable in-cluster address for auth-service.
+#
+# TWO things here are not free choices:
+#
+#   1. metadata.name must be exactly "auth-service", because
+#      gateway/nginx.conf contains `proxy_pass http://auth-service:8000` and
+#      that file is baked into the gateway image. A different name here means
+#      an NXDOMAIN in the gateway's logs and a 502 on every /api/auth/*
+#      request.
+#   2. port must be 8000, not the conventional 80, for the same reason -- the
+#      port is part of that proxy_pass line. Reusing the container's own port
+#      also keeps `kubectl port-forward svc/auth-service 8000:8000` and the
+#      Compose setup reading the same way.
+#
+# No `type:` -- ClusterIP is the default and is what is wanted. Only the
+# gateway is reachable from outside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  labels:
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: sports-store
+spec:
+  selector:
+    # Matches the Deployment's POD TEMPLATE labels, not the Deployment's own
+    # metadata. A Service selects pods directly; it has no knowledge of the
+    # Deployment that created them.
+    app: auth-service
+  ports:
+    - name: http
+      port: 8000
+      # The named port from the Deployment's container spec, so this survives
+      # a container port change without an edit here.
+      targetPort: http
+      protocol: TCP

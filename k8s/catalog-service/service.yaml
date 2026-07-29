@@ -1,12 +1,27 @@
-# TODO: apiVersion (v1) and kind (Service).
-
-# TODO: metadata.name — check gateway/nginx.conf: TWO location blocks
-#   (/api/products and /api/internal/) both proxy to the same upstream
-#   hostname, because both routes are served by catalog-service. Name this
-#   Service to match that hostname exactly (see ../README.md).
-
-# TODO: spec.selector — must match catalog-service's Deployment pod-template
-#   labels (deployment.yaml).
-
-# TODO: spec.ports — expose a port targeting catalog-service's container port
-#   (see deployment.yaml). Default ClusterIP — not externally reachable.
+# Stable in-cluster address for catalog-service.
+#
+# Two of the gateway's location blocks resolve here -- /api/products and
+# /api/internal/ -- because both routes are served by catalog-service. That
+# makes this the one Service whose name appears twice in nginx.conf, so a
+# rename breaks the storefront listing AND the demo-only internal endpoints.
+#
+# It is also the busiest name in the cluster: cart-service and order-service
+# both hold a CATALOG_URL pointing at it (see ../configmaps/).
+#
+# Name and port 8000 are fixed by nginx.conf -- see ../auth-service/service.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-service
+  labels:
+    app.kubernetes.io/name: catalog-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: sports-store
+spec:
+  selector:
+    app: catalog-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

@@ -1,11 +1,22 @@
-# TODO: apiVersion (v1) and kind (Service).
-
-# TODO: metadata.name — check gateway/nginx.conf's /api/payments location
-#   block for the exact upstream hostname it expects, and match it (see
-#   ../README.md).
-
-# TODO: spec.selector — must match payment-service's Deployment pod-template
-#   labels (deployment.yaml).
-
-# TODO: spec.ports — expose a port targeting payment-service's container port
-#   (see deployment.yaml). Default ClusterIP.
+# Stable in-cluster address for payment-service.
+#
+# Resolved by the gateway's /api/payments location block and by order-service's
+# PAYMENT_URL during the charge step of the checkout saga.
+#
+# Name and port 8000 are fixed by nginx.conf -- see ../auth-service/service.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  labels:
+    app.kubernetes.io/name: payment-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: sports-store
+spec:
+  selector:
+    app: payment-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
