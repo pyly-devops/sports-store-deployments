@@ -1,9 +1,19 @@
-# TODO: apiVersion (v1) and kind (ConfigMap).
-
-# TODO: metadata.name — e.g. auth-config.
-
-# TODO: data — non-secret config for auth-service. See
-#   services/auth-service/.env.example for what it needs beyond
-#   MONGO_URI/JWT_SECRET (those two are secrets, defined in
-#   ../secrets/app-secrets.yaml instead):
-#   - ACCESS_TOKEN_EXPIRE_MINUTES
+# Non-secret configuration for auth-service.
+#
+# MONGO_URI and JWT_SECRET are deliberately NOT here -- anything carrying a
+# credential belongs in a Secret. A ConfigMap is unencrypted at rest and shows
+# up in full plaintext in `kubectl get configmap -o yaml`, which is exactly the
+# kind of accidental disclosure the project's "no secrets in logs" rule exists
+# to prevent.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-config
+  labels:
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: sports-store
+data:
+  # Quoted because ConfigMap values must be strings. Unquoted, YAML parses this
+  # as an integer and kubectl rejects the manifest.
+  ACCESS_TOKEN_EXPIRE_MINUTES: "60"

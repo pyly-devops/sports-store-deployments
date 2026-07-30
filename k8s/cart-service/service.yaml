@@ -1,11 +1,21 @@
-# TODO: apiVersion (v1) and kind (Service).
-
-# TODO: metadata.name — check gateway/nginx.conf's /api/cart location block
-#   for the exact upstream hostname it expects, and match it (see
-#   ../README.md).
-
-# TODO: spec.selector — must match cart-service's Deployment pod-template
-#   labels (deployment.yaml).
-
-# TODO: spec.ports — expose a port targeting cart-service's container port
-#   (see deployment.yaml). Default ClusterIP.
+# Stable in-cluster address for cart-service.
+#
+# Resolved by the gateway's /api/cart location block and by order-service's
+# CART_URL during checkout. Name and port 8000 are fixed by nginx.conf -- see
+# ../auth-service/service.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cart-service
+  labels:
+    app.kubernetes.io/name: cart-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: sports-store
+spec:
+  selector:
+    app: cart-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

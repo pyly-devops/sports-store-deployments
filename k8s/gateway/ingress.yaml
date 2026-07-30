@@ -1,0 +1,43 @@
+# HTTP entrypoint for the storefront.
+#
+# Requires an ingress controller. On minikube: `minikube addons enable ingress`
+# (installs ingress-nginx), then point the hostname at the node:
+#
+#   echo "$(minikube ip) sports-store.local" | sudo tee -a /etc/hosts
+#
+# On the docker driver on Linux the node IP (192.168.49.2) is routable from the
+# host directly, so no `minikube tunnel` is needed.
+#
+# Why bother, when ../gateway/service.yaml already exposes a NodePort: this is
+# the resource that carries forward. Milestone 5 swaps ingressClassName for
+# `alb` and adds AWS Load Balancer Controller annotations, and the routing
+# below is unchanged. A NodePort teaches nothing that transfers.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: sports-store
+spec:
+  # The modern field. The deprecated kubernetes.io/ingress.class annotation
+  # still works on many controllers but is not guaranteed past 1.22.
+  ingressClassName: nginx
+  rules:
+    - host: sports-store.local
+      http:
+        paths:
+          # ONE rule for everything. The gateway's own nginx.conf already does
+          # the path routing (/api/auth -> auth-service, and so on), so
+          # duplicating those rules here would mean two places to keep in sync
+          # and would bypass the gateway image the whole design is built
+          # around. The Ingress controller's only job is to get traffic to the
+          # gateway.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http

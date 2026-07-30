@@ -1,5 +1,16 @@
-# TODO: apiVersion (v1) and kind (Namespace).
-
-# TODO: metadata.name — use "sports-store". Later stages (Helm chart, EKS
-#   deploy, CI/CD, Argo CD, observability) all assume this exact namespace in
-#   their example commands — don't pick a different one here.
+# The one namespace the whole application lives in.
+#
+# The name is fixed at "sports-store" on purpose: the Helm chart (Milestone 3),
+# the EKS deploy, the Argo CD Application and the observability stack all
+# assume it in their example commands. Renaming it here means renaming it in
+# five other places later.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sports-store
+  labels:
+    # Recommended labels, applied consistently across every resource in this
+    # directory so `kubectl get all -l app.kubernetes.io/part-of=sports-store`
+    # returns the whole application and nothing else.
+    app.kubernetes.io/name: sports-store
+    app.kubernetes.io/part-of: sports-store

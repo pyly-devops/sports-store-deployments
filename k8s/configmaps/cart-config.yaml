@@ -1,12 +1,23 @@
-# TODO: apiVersion (v1) and kind (ConfigMap).
-
-# TODO: metadata.name — e.g. cart-config.
-
-# TODO: data — non-secret config for cart-service. See
-#   services/cart-service/.env.example for what it needs beyond
-#   MONGO_URI/JWT_SECRET (those two are secrets, defined in
-#   ../secrets/app-secrets.yaml instead):
-#   - CATALOG_URL: must point at catalog-service's in-cluster address (the
-#     Service name you gave it in ../catalog-service/service.yaml, plus its
-#     port) — NOT the localhost value from .env.example, that one's only for
-#     running the service outside Docker/k8s.
+# Non-secret configuration for cart-service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cart-config
+  labels:
+    app.kubernetes.io/name: cart-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: sports-store
+data:
+  # cart-service calls catalog-service over REST to validate SKUs and prices --
+  # it never reads catalog_db directly. That REST hop is what actually enforces
+  # the database-per-service boundary.
+  #
+  # The hostname is the Kubernetes Service name, resolved by cluster DNS, and
+  # the port is 8000 because that is what every service listens on inside its
+  # container (see each Dockerfile). NOT localhost: a pod's localhost is the
+  # pod itself, so a loopback URL here would try to reach cart-service.
+  #
+  # This value is byte-for-byte identical to the one in docker-compose.yml,
+  # because the Compose service names were chosen up front to match the
+  # Kubernetes Service names.
+  CATALOG_URL: http://catalog-service:8000

@@ -1,14 +1,27 @@
-# TODO: apiVersion (v1) and kind (ConfigMap).
+# Non-secret configuration for order-service.
+#
+# order-service is the checkout saga orchestrator: read cart -> check stock ->
+# create pending order -> charge payment -> on success decrement stock, clear
+# cart, mark paid; on failure mark payment_failed. That means it is the only
+# service that talks to three others, hence three URLs here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-config
+  labels:
+    app.kubernetes.io/name: order-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: sports-store
+data:
+  # Service names over cluster DNS, port 8000 -- same reasoning as
+  # cart-config.yaml. If any of these three Services is renamed, checkout
+  # breaks with a DNS failure rather than a useful error.
+  CART_URL: http://cart-service:8000
+  CATALOG_URL: http://catalog-service:8000
+  PAYMENT_URL: http://payment-service:8000
 
-# TODO: metadata.name — e.g. order-config.
-
-# TODO: data — non-secret config for order-service. See
-#   services/order-service/.env.example for what it needs beyond
-#   MONGO_URI/JWT_SECRET (those two are secrets, defined in
-#   ../secrets/app-secrets.yaml instead):
-#   - CART_URL, CATALOG_URL, PAYMENT_URL: each must point at that service's
-#     in-cluster Service name + port (see ../cart-service/service.yaml,
-#     ../catalog-service/service.yaml, ../payment-service/service.yaml) —
-#     NOT the localhost values from .env.example.
-#   - SHIPPING_FLAT_RATE
-#   - FREE_SHIPPING_THRESHOLD
+  # Business rules, not infrastructure -- they belong in config so pricing can
+  # change without rebuilding an image. Quoted so YAML keeps them as strings;
+  # "5.00" unquoted would become the float 5.0 and lose the cents formatting.
+  SHIPPING_FLAT_RATE: "5.00"
+  FREE_SHIPPING_THRESHOLD: "100"

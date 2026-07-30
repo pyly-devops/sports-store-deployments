@@ -1,24 +1,96 @@
-# TODO: apiVersion (apps/v1) and kind (Deployment).
-
-# TODO: metadata.name — e.g. gateway.
-
-# TODO: spec.replicas — start with 1.
-
-# TODO: spec.selector.matchLabels and spec.template.metadata.labels — pick a
-#   label (e.g. app: gateway), same key/value in both places.
-
-# TODO: spec.template.spec.containers[0]
-#   - name: gateway
-#   - image: the image you built from gateway/Dockerfile in Stage 2 (the one
-#     that bundles the built frontend + nginx.conf). No "latest".
-#   - ports.containerPort: 80 (nginx listens on 80 — see gateway/nginx.conf).
-#   - no envFrom needed — the gateway is static nginx config + a prebuilt
-#     frontend bundle, it doesn't read environment variables.
-#   - readinessProbe / livenessProbe: an httpGet on `/` at port 80 is enough
-#     — nginx serving the frontend's index.html is a reasonable proxy for
-#     "this pod is up".
-#   - resources.requests/limits: set something reasonable.
-
-# Note: this Deployment does NOT need to wait on the 5 backend services to be
-# ready — nginx will just return upstream errors on /api/* until they are.
-# Nothing here depends on backend Service names except at request time.
+# gateway -- NGINX serving the built React bundle and reverse-proxying /api/*
+# to the five backend services. The single entrypoint for the whole system.
+#
+# No env, no ConfigMap: nginx.conf and the frontend bundle are both baked into
+# the image at build time. That is why a change to a backend Service name means
+# rebuilding this image, not editing a manifest.
+#
+# No startup ordering against the backends either. If a backend is not up yet,
+# nginx returns 502 on that route and starts working the moment the Service has
+# endpoints -- there is nothing to wait for.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: sports-store
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/component: gateway
+        app.kubernetes.io/part-of: sports-store
+    spec:
+      containers:
+        - name: gateway
+          # The hash is the GATEWAY repo's commit, not the frontend's, even
+          # though this image contains the frontend bundle. That is a real
+          # limitation of the named-build-context approach: a frontend-only
+          # change produces an image whose tag points at an unchanged gateway
+          # commit. Milestone 5/6 fixes it properly -- the frontend publishes
+          # its own image and the gateway copies from it.
+          image: sports-store/gateway:0.1.0-6640d7e
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            # `/` serves the frontend's index.html straight off disk, so this
+            # tests nginx itself without depending on any backend being up.
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            # Lower than the Python services: this is static file serving and
+            # proxying, with no interpreter and no database driver.
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              # Drop everything, then hand back only what nginx provably needs.
+              # `drop: [ALL]` alone crashlooped this pod:
+              #
+              #   nginx: [emerg] chown("/var/cache/nginx/client_temp", 101)
+              #                  failed (1: Operation not permitted)
+              #
+              # The stock nginx image starts its master as root, chowns its
+              # cache directories, then drops the worker processes to the
+              # `nginx` user. That needs exactly three capabilities, and
+              # NET_BIND_SERVICE for port 80 (< 1024).
+              drop: [ALL]
+              add:
+                - CHOWN            # chown /var/cache/nginx/*
+                - SETUID           # drop workers to the nginx user
+                - SETGID           # drop workers to the nginx group
+                - NET_BIND_SERVICE # bind port 80
+            # KNOWN GAP -- deliberately not runAsNonRoot here, unlike the five
+            # backend Deployments, for the reason above: the master process is
+            # root by design in this image. The fix is
+            # nginxinc/nginx-unprivileged (listens on 8080, runs as UID 101
+            # throughout, needs none of the capabilities above), which means
+            # changing the gateway Dockerfile and the port in three places.
+            # Left for a focused change rather than smuggled into this
+            # milestone.

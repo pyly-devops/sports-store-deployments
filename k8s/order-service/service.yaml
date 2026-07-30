@@ -1,11 +1,23 @@
-# TODO: apiVersion (v1) and kind (Service).
-
-# TODO: metadata.name — check gateway/nginx.conf's /api/orders location block
-#   for the exact upstream hostname it expects, and match it (see
-#   ../README.md).
-
-# TODO: spec.selector — must match order-service's Deployment pod-template
-#   labels (deployment.yaml).
-
-# TODO: spec.ports — expose a port targeting order-service's container port
-#   (see deployment.yaml). Default ClusterIP.
+# Stable in-cluster address for order-service.
+#
+# Resolved by the gateway's /api/orders location block. Nothing else calls it:
+# order-service is the orchestrator, so it is a caller of cart, catalog and
+# payment rather than a dependency of them.
+#
+# Name and port 8000 are fixed by nginx.conf -- see ../auth-service/service.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  labels:
+    app.kubernetes.io/name: order-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: sports-store
+spec:
+  selector:
+    app: order-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

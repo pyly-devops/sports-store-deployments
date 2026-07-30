@@ -1,22 +1,36 @@
-# TODO: apiVersion (v1) and kind (Service).
-
-# TODO: metadata.name — your choice, e.g. gateway. Nothing else in the
-#   cluster needs to resolve this Service by name (unlike the backend
-#   Services), since it's the entry point, not a dependency of anything else.
-
-# TODO: spec.selector — must match the gateway Deployment's pod-template
-#   labels (deployment.yaml).
-
-# TODO: spec.type — this is the ONE Service in this directory that should NOT
-#   default to ClusterIP. Pick NodePort (works on any local cluster,
-#   including kind/minikube) or LoadBalancer (if your cluster provisions
-#   one) so it's reachable from outside the cluster. Document which you
-#   picked and how to actually reach it (e.g. `minikube service gateway` or
-#   the NodePort + node IP).
-
-# TODO: spec.ports — port 80 targeting the gateway container's port 80.
-
-# Alternative: instead of a NodePort/LoadBalancer Service, you may expose
-# this via an Ingress resource + ingress controller if your cluster has one
-# installed. Either satisfies Stage 3's "Configure Ingress (or NGINX
-# Gateway)" requirement — pick one and document why.
+# The only Service in this directory reachable from outside the cluster.
+#
+# NodePort rather than LoadBalancer: minikube has no cloud load balancer to
+# provision, so a LoadBalancer Service would sit <pending> forever unless
+# `minikube tunnel` is running. NodePort works on any local cluster with
+# nothing extra.
+#
+# A NodePort Service still gets a ClusterIP, so ./ingress.yaml routes to it
+# perfectly well. The two are complements, not alternatives:
+#
+#   Ingress   -> http://sports-store.local        the documented path, and the
+#                                                 shape Milestone 5 reuses with
+#                                                 an ALB on EKS
+#   NodePort  -> http://<minikube ip>:30080       always works, no addon and no
+#                                                 /etc/hosts entry needed
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: sports-store
+spec:
+  type: NodePort
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      # Pinned instead of letting Kubernetes allocate from the 30000-32767
+      # range, so the URL in the README stays true across a `kubectl delete`
+      # and re-apply.
+      nodePort: 30080
+      protocol: TCP

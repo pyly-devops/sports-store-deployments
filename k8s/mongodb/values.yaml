@@ -1,38 +1,104 @@
-# Values for the Bitnami MongoDB Helm chart (installed separately from the
-# app — see ../README.md for the install command). This file only configures
-# MongoDB itself; it is not part of the app Helm chart (that's Stage 4).
+# Values for the Bitnami MongoDB Helm chart. MongoDB is installed separately
+# from the application (see ../README.md); this file configures only the
+# database, and is not part of the app Helm chart that arrives in Milestone 3.
 #
 # Chart docs: https://github.com/bitnami/charts/tree/main/bitnami/mongodb
+#
+# ---------------------------------------------------------------------------
+# CHART VERSION IS PINNED TO 16.5.45 -- and that pin is load-bearing.
+# ---------------------------------------------------------------------------
+# In 2025 Bitnami moved to "Bitnami Secure Images": the free
+# docker.io/bitnami/* repositories now publish only a rolling `latest` tag, and
+# every previously published versioned tag was relocated to
+# docker.io/bitnamilegacy/*. Chart 19.1.21 (current at the time of writing)
+# therefore resolves to `bitnami/mongodb:latest`, which collides head-on with
+# this project's non-negotiable: never `latest`, anywhere.
+#
+# Chart 16.5.45 is the last line that still pins a real version --
+# 8.0.13-debian-12-r0 -- and that exact tag is still published, under
+# bitnamilegacy. So: pin the chart, redirect the repository, keep the chart's
+# own tag. Verified before committing, not assumed:
+#   helm template ... --set image.repository=bitnamilegacy/mongodb   -> renders
+#   docker.io/bitnamilegacy/mongodb:8.0.13-debian-12-r0             -> exists
+#
+# The honest tradeoff: bitnamilegacy is archived and will not receive security
+# patches. Acceptable for a local development database; NOT acceptable for the
+# EKS deployment. Milestone 5 has to either move to a supported source (MongoDB
+# Atlas, DocumentDB, the official mongo image behind a hand-written
+# StatefulSet) or pay for Bitnami's supported catalogue.
 
-# TODO: auth — MongoDB's built-in auth block.
-#   - auth.enabled: true
-#   - auth.rootUser / auth.rootPassword: match MONGO_ROOT_USERNAME /
-#     MONGO_ROOT_PASSWORD in ../secrets/app-secrets.yaml exactly, or (better)
-#     reference that Secret directly with auth.existingSecret instead of
-#     duplicating the password in plaintext here — check the chart's README
-#     for the exact key names it expects in an existingSecret.
+image:
+  # Tag deliberately not set here -- inheriting the chart's own default
+  # (8.0.13-debian-12-r0) keeps chart and image versions a tested pair. Only
+  # the repository moves.
+  repository: bitnamilegacy/mongodb
 
-# TODO: persistence — persistent storage for MongoDB's data directory.
-#   - persistence.enabled: true
-#   - persistence.size: e.g. 1Gi is plenty for course data.
-#   Without this, MongoDB's data lives in the pod's ephemeral filesystem and
-#   is gone the moment the pod is rescheduled — Stage 3's success criteria
-#   explicitly require data to survive pod restarts.
+# One instance, not a replica set. The application's consistency needs are met
+# by a single node, and a 3-node replica set on a one-node minikube would cost
+# 3x the memory to demonstrate nothing extra. Milestone 5 revisits this: on
+# EKS, a standalone MongoDB is a single point of failure worth naming out loud.
+architecture: standalone
 
-# TODO: initdbScripts / extraVolumes+extraVolumeMounts — wiring the seed
-# script in. Two ways to do this with this chart, pick one and document why:
-#   1. `initdbScripts` value: some Bitnami chart versions accept a map of
-#      filename -> script content directly in values, which the chart mounts
-#      for you.
-#   2. `extraVolumes` (referencing the mongo-init ConfigMap from
-#      ./init-configmap.yaml) + `extraVolumeMounts` mounting it read-only at
-#      /docker-entrypoint-initdb.d/init-mongo.js.
-#   Check the chart version you're actually installing — the exact value
-#   names have changed between Bitnami chart versions, don't assume.
-#   Whichever you pick, verify it only runs once: MongoDB's
-#   docker-entrypoint-initdb.d scripts only execute against an empty data
-#   directory, so a second `helm upgrade` against an existing PVC must NOT
-#   re-run seed/init-mongo.js. Test this explicitly (see Stage 3 success
-#   criteria) — don't just assume it.
+auth:
+  enabled: true
+  # Points at the Secret created by ../secrets/apply-secrets.sh rather than
+  # putting a password in this file. The key name inside that Secret --
+  # `mongodb-root-password` -- is dictated by the chart, which is exactly why
+  # it lives in its own Secret instead of being mixed into app-secrets.
+  existingSecret: mongodb-credentials
 
-# TODO: resources — set requests/limits rather than leaving them unset.
+persistence:
+  # Without this, MongoDB's data directory is the pod's ephemeral filesystem
+  # and every reschedule wipes the database. Milestone 2 explicitly requires
+  # data to survive a pod restart, so this is the requirement, not a nicety.
+  enabled: true
+  # Fulfilled by minikube's default `standard` StorageClass (hostpath
+  # provisioner). On EKS this becomes an EBS volume via the EBS CSI driver.
+  size: 1Gi
+
+# The seed script, mounted into /docker-entrypoint-initdb.d/ from the
+# `mongo-init` ConfigMap in ./init-configmap.yaml.
+#
+# Chosen over the `initdbScripts` value (which inlines script content directly
+# into these values) because the script is 200 lines of product data that
+# already exists as a file. Inlining it would mean maintaining a copy inside a
+# YAML string -- worse to diff, worse to lint, and impossible to run standalone
+# against a local mongosh.
+#
+# Idempotency comes from two independent layers, which is why a `helm upgrade`
+# against a populated PVC cannot double the catalogue:
+#   1. The Bitnami entrypoint runs /docker-entrypoint-initdb.d/* only when the
+#      data directory is empty -- so on any restart it does not run at all.
+#   2. The script itself upserts ($setOnInsert + upsert: true), so even a
+#      forced re-run would not duplicate anything.
+# Both were verified against this cluster; see docs/PROGRESS.md for the counts.
+initdbScriptsConfigMap: mongo-init
+
+updateStrategy:
+  # NOT cosmetic. The chart defaults a standalone install to RollingUpdate,
+  # which starts the replacement pod before terminating the old one. With one
+  # ReadWriteOnce PVC that deadlocks: the new pod sits Pending on a volume the
+  # old pod still holds, and the old pod waits for the new one to go Ready.
+  # Recreate terminates first, accepting a few seconds of downtime -- correct
+  # for a single-replica database.
+  type: Recreate
+
+networkPolicy:
+  # Turned off rather than left at the chart's default of on. minikube's
+  # default CNI does not enforce NetworkPolicy at all, so an enabled policy
+  # here would render, appear in `kubectl get netpol`, and protect precisely
+  # nothing. A security control that looks active but is not is worse than an
+  # absent one. Real network segmentation belongs on EKS, where the VPC CNI
+  # actually enforces it.
+  enabled: false
+
+resources:
+  # Requests drive scheduling; limits bound the damage from a runaway query.
+  # Higher than the application services because MongoDB uses a chunk of RAM
+  # for its WiredTiger cache.
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
