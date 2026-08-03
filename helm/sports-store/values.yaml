@@ -271,7 +271,7 @@ secrets:
 # that true, and note they defend against two different systems.
 # ---------------------------------------------------------------------------
 mongodbData:
-  enabled: true
+  enabled: false
   name: sports-store-mongodb-data
   size: 1Gi
   accessModes: [ReadWriteOnce]
@@ -288,7 +288,7 @@ mongoInitConfigMapName: mongo-init
 # mongodb — values passed through to the Bitnami subchart.
 # ---------------------------------------------------------------------------
 mongodb:
-  enabled: true
+  enabled: false
 
   # WITHOUT THIS the subchart names its Service `<release>-mongodb`, and every
   # MONGO_URI in app-secrets points at `mongodb:27017` — including the ones

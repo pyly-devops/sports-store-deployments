@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Create the two Secrets the application needs, from the local .env file.
+# Create the Secret the application needs, from the local .env file.
 #
 #   cp k8s/secrets/.env.example k8s/secrets/.env   # then edit it
 #   ./k8s/secrets/apply-secrets.sh
@@ -29,15 +29,13 @@ fi
 set -a; source "$ENV_FILE"; set +a
 
 : "${JWT_SECRET:?JWT_SECRET must be set in $ENV_FILE}"
-: "${MONGO_ROOT_USERNAME:?MONGO_ROOT_USERNAME must be set in $ENV_FILE}"
-: "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD must be set in $ENV_FILE}"
+: "${MONGO_URI:?MONGO_URI must be set in $ENV_FILE}"
 
-# The Bitnami MongoDB chart is installed as release "mongodb" in this
-# namespace, which gives its Service the DNS name `mongodb`. authSource=admin
-# because the root user lives in the admin database, not in the application
-# databases.
-MONGO_HOST="mongodb:27017"
-MONGO_URI="mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@${MONGO_HOST}/?authSource=admin"
+# MongoDB Atlas now, not a self-hosted Bitnami chart -- the connection
+# string is already complete as copied from the Atlas UI, so there is
+# nothing to assemble here anymore. No separate mongodb-credentials Secret
+# either: Atlas manages its own root user, we only ever hold the app user's
+# connection string.
 
 # ---------------------------------------------------------------------------
 # app-secrets -- consumed by the five service Deployments.
@@ -60,16 +58,4 @@ kubectl create secret generic app-secrets \
   --from-literal="PAYMENT_MONGO_URI=${MONGO_URI}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# ---------------------------------------------------------------------------
-# mongodb-credentials -- consumed by the Bitnami chart via auth.existingSecret.
-#
-# Separate from app-secrets because the key name is not ours to choose: the
-# chart looks for exactly `mongodb-root-password`. Mixing a chart-dictated key
-# into the application's own Secret would couple the two for no benefit.
-# ---------------------------------------------------------------------------
-kubectl create secret generic mongodb-credentials \
-  --namespace "$NAMESPACE" \
-  --from-literal="mongodb-root-password=${MONGO_ROOT_PASSWORD}" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-echo "Secrets applied to namespace ${NAMESPACE}: app-secrets, mongodb-credentials"
+echo "Secrets applied to namespace ${NAMESPACE}: app-secrets"
