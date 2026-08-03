@@ -1,0 +1,13 @@
+# Patterns to ignore when packaging the chart.
+.git/
+.gitignore
+*.tmp
+*.swp
+.DS_Store
+.idea/
+.vscode/
+
+# Environment values files are INPUTS to `helm install -f`, not part of the
+# packaged chart. Shipping them inside the .tgz would imply the chart carries
+# environment knowledge, which is exactly what the brief says it must not.
+environments/

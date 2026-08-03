@@ -1,0 +1,76 @@
+# EKS overrides. NOT YET EXERCISED — Milestone 5 does that.
+#
+# Committed now, in this shape, because writing it is how the chart proves it is
+# actually environment-agnostic: everything below is a value, not a template
+# change. If any of it had needed a new `if` in a template, the chart would have
+# been wrong.
+#
+#   helm upgrade --install sports-store . -n sports-store \
+#     -f environments/production/values.yaml \
+#     -f environments/production/images/auth-service.yaml \
+#     ... (one -f per service; Milestone 7 hands this list to Argo CD)
+#
+# The ACCOUNT ID AND REGION BELOW ARE PLACEHOLDERS. Milestone 4 creates the ECR
+# repos and this line gets its real value then.
+
+imageRegistry: "000000000000.dkr.ecr.eu-west-1.amazonaws.com"
+
+serviceDefaults:
+  # Always, not IfNotPresent: with a real registry the node should re-pull on
+  # every restart. Tags are immutable in practice (<semver>-<git-hash>), so this
+  # costs a registry round trip and buys correctness if a tag is ever moved.
+  imagePullPolicy: Always
+  # Two replicas so a node or pod dying is survivable and a rolling upgrade has
+  # somewhere to send traffic. Single-replica everything is the first thing the
+  # pre-demo resilience review asks about.
+  replicas: 2
+
+services:
+  gateway:
+    replicas: 2
+    service:
+      # ClusterIP, NOT NodePort. On EKS the ALB is the only thing reachable from
+      # outside the cluster, and it reaches the gateway through the Ingress
+      # below. A NodePort here would open a second, unmanaged path in through the
+      # node security group.
+      type: ClusterIP
+
+ingress:
+  enabled: true
+  # The whole Milestone 5 ingress change: a class swap and annotations. The
+  # routing rule in templates/ingress.yaml does not move.
+  className: alb
+  # Replaced with the real DNS name once Route 53 is in play.
+  host: sports-store.example.com
+  annotations:
+    # internet-facing + ip target type is what puts the ALB in the public subnets
+    # while sending traffic straight to pod IPs (VPC CNI), skipping the extra
+    # node hop that `instance` mode adds.
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # Health checks hit the gateway's own `/`, which serves index.html off disk
+    # and does not depend on any backend being up.
+    alb.ingress.kubernetes.io/healthcheck-path: /
+
+mongodbData:
+  # gp3 over the gp2 default: cheaper per GiB and its baseline IOPS are not tied
+  # to volume size. Requires the EBS CSI driver add-on from Milestone 4.
+  storageClass: gp3
+  size: 8Gi
+
+mongodb:
+  networkPolicy:
+    # ON here, unlike local. The VPC CNI actually enforces NetworkPolicy on EKS,
+    # so this stops being decorative and starts being a control: only labelled
+    # app pods may reach 27017.
+    enabled: true
+
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {cpu: 1000m, memory: 2Gi}
+
+  # KNOWN GAP, carried forward deliberately rather than hidden: this is still the
+  # archived bitnamilegacy image and a single standalone node — an unpatched
+  # single point of failure holding every order. Milestone 5 has to resolve it
+  # (Atlas, DocumentDB, or a supported image) before this file is used for real.

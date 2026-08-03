@@ -1,0 +1,18 @@
+# Image tag for order-service. THIS FILE IS MACHINE-EDITED.
+#
+# Milestone 7: this service's GitHub Actions workflow is the only thing that
+# writes here, and it does so with a YAML-aware tool, never a text replace:
+#
+#   yq -i '.services.order-service.image.tag = "'"$VERSION-$SHORT_SHA"'"' \
+#     helm/sports-store/environments/production/images/order-service.yaml
+#
+# One file per service so six pipelines can commit concurrently without ever
+# touching the same line — which is the entire reason this is split out of
+# environments/production/values.yaml.
+#
+# The repository lives in values.yaml and the registry in
+# environments/production/values.yaml. Only the tag belongs here.
+services:
+  order-service:
+    image:
+      tag: 0.1.0-01bc69c
