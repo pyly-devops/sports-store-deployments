@@ -1,0 +1,145 @@
+{{/*
+================================================================================
+  ONE template, six services, three resource kinds.
+
+  This file replaces eleven near-identical manifests from k8s/ (five Deployments,
+  five Services, four ConfigMaps, plus the gateway pair). The five backends
+  differed only in image, secret key, and ConfigMap — which is exactly the shape
+  a `range` collapses.
+
+  `range` over a MAP, not a list. Helm sorts map keys, so the output order is
+  deterministic and a diff between two renders shows real changes only. A map
+  also lets `--set services.auth-service.replicas=2` and
+  `yq '.services.cart-service.image.tag = "..."'` address exactly one service —
+  a list forces index arithmetic, and Milestone 7 requires CI to edit its own
+  service's tag with a YAML-aware tool, never a text replace.
+
+  $ (the root context) is used throughout instead of . — inside a range, . is
+  the loop variable.
+================================================================================
+*/}}
+{{- range $name, $override := .Values.services }}
+{{- $svc := include "sports-store.svc" (dict "svc" $override "defaults" $.Values.serviceDefaults) | fromYaml }}
+{{- $labels := include "sports-store.labels" (dict "ctx" $ "name" $name "component" $svc.component) }}
+{{- $selector := include "sports-store.selectorLabels" (dict "name" $name) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels: {{- $labels | nindent 4 }}
+spec:
+  replicas: {{ $svc.replicas }}
+  selector:
+    matchLabels: {{- $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- $selector | nindent 8 }}
+        {{- $labels | nindent 8 }}
+      {{- if $svc.config }}
+      annotations:
+        # Roll the pods when their ConfigMap changes. Without this, `helm upgrade`
+        # with a changed config value updates the ConfigMap and nothing else —
+        # the running pods keep the old environment until something unrelated
+        # happens to restart them, and the upgrade looks successful while having
+        # changed nothing. Hashing the rendered ConfigMap makes the pod template
+        # change, which is what actually triggers the rollout.
+        checksum/config: {{ toYaml $svc.config | sha256sum }}
+      {{- end }}
+    spec:
+      containers:
+        - name: {{ $name }}
+          image: {{ include "sports-store.image" (dict "svc" $svc "name" $name "registry" $.Values.imageRegistry) }}
+          imagePullPolicy: {{ $svc.imagePullPolicy }}
+          ports:
+            # Named so the probes and the Service target "http" rather than
+            # repeating the number — change the port here and nothing else needs
+            # editing.
+            - name: http
+              containerPort: {{ $svc.port }}
+              protocol: TCP
+          {{- if or $svc.mongoUriKey $svc.jwt }}
+          env:
+            {{- if $svc.mongoUriKey }}
+            # Mapped one key at a time with secretKeyRef rather than
+            # `envFrom: secretRef: app-secrets`. envFrom would inject all five
+            # services' connection strings into this pod; least privilege says
+            # each service should only ever see its own.
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sports-store.secretName" $ }}
+                  key: {{ $svc.mongoUriKey }}
+            {{- end }}
+            {{- if $svc.jwt }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sports-store.secretName" $ }}
+                  key: JWT_SECRET
+            {{- end }}
+          {{- end }}
+          {{- if $svc.config }}
+          envFrom:
+            # Non-secret config is bulk-loaded: there is nothing to protect, and
+            # a per-service ConfigMap already scopes it correctly.
+            - configMapRef:
+                name: {{ $name }}-config
+          {{- end }}
+          readinessProbe:
+            # Gates whether the Service sends traffic here. HONEST CAVEAT:
+            # /health returns a static {"status": "ok"} and does NOT check
+            # MongoDB, so readiness proves the process is serving, not that the
+            # database is reachable. Making it a real dependency check is a
+            # deliberate later improvement, not an oversight.
+            httpGet:
+              path: {{ $svc.probePath }}
+              port: http
+            {{- toYaml $svc.probes.readiness | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: {{ $svc.probePath }}
+              port: http
+            {{- toYaml $svc.probes.liveness | nindent 12 }}
+          resources: {{- toYaml $svc.resources | nindent 12 }}
+          securityContext: {{- toYaml $svc.securityContext | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels: {{- $labels | nindent 4 }}
+spec:
+  type: {{ $svc.service.type }}
+  selector:
+    # Matches the Deployment's POD TEMPLATE labels, not the Deployment's own
+    # metadata. A Service selects pods directly; it has no knowledge of the
+    # Deployment that created them.
+    {{- $selector | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $svc.port }}
+      # The named port from the container spec, so this survives a port change
+      # without an edit here.
+      targetPort: http
+      protocol: TCP
+      {{- if and (eq $svc.service.type "NodePort") $svc.service.nodePort }}
+      # Pinned rather than allocated from 30000-32767, so the URL in the README
+      # stays true across a delete and reinstall.
+      nodePort: {{ $svc.service.nodePort }}
+      {{- end }}
+{{- if $svc.config }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-config
+  labels: {{- $labels | nindent 4 }}
+data:
+  # MONGO_URI and JWT_SECRET are deliberately NOT here — anything carrying a
+  # credential belongs in a Secret. A ConfigMap is unencrypted at rest and shows
+  # up in full plaintext in `kubectl get configmap -o yaml`.
+  {{- toYaml $svc.config | nindent 2 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,35 @@
+{{/*
+================================================================================
+  The seed script, mounted by the Bitnami subchart into
+  /docker-entrypoint-initdb.d/ via mongodb.initdbScriptsConfigMap.
+
+  .Files.Get rather than an inlined string: the script is 250 lines of product
+  data that already exists as a file. Inlining it into values.yaml would mean
+  maintaining a copy inside a YAML string — worse to diff, worse to lint, and
+  impossible to run standalone against a local mongosh.
+
+  THE KEY NAME MATTERS. MongoDB uses the ConfigMap key as the filename it sees
+  in /docker-entrypoint-initdb.d/, and skips anything without a .js extension.
+  `init-mongo.js` is not decoration.
+
+  The ConfigMap name is NOT release-prefixed, because values.yaml has to name it
+  in mongodb.initdbScriptsConfigMap and a mismatch fails silently — an empty
+  database, not an error. Both read from .Values.mongoInitConfigMapName so they
+  cannot drift.
+
+  No checksum/config rollout trigger here, unlike the app ConfigMaps: changing
+  this file deliberately does NOT re-seed. The Bitnami entrypoint runs these
+  scripts only against an empty data directory, so restarting the pod after an
+  edit would do nothing anyway. Re-seeding means deleting the PVC.
+================================================================================
+*/}}
+{{- if .Values.mongodb.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.mongoInitConfigMapName }}
+  labels: {{- include "sports-store.labels" (dict "ctx" . "name" "mongodb" "component" "database") | nindent 4 }}
+data:
+  init-mongo.js: |
+{{ .Files.Get "files/init-mongo.js" | indent 4 }}
+{{- end }}

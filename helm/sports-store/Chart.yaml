@@ -1,0 +1,45 @@
+apiVersion: v2
+name: sports-store
+description: CloudCart sports store — five FastAPI services, an NGINX gateway, and MongoDB
+type: application
+
+# version  = the CHART's version. Bumped when the templates change.
+# appVersion = the APPLICATION's version. It is deliberately NOT used to derive
+#              image tags: every service ships on its own cadence and carries
+#              its own <semver>-<git-hash> in values.yaml, so a single
+#              chart-wide appVersion could only ever be a lie about five of them.
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords: [microservices, fastapi, mongodb, ecommerce]
+home: https://github.com/pyly-devops
+
+dependencies:
+  # MongoDB comes from Bitnami rather than a hand-rolled StatefulSet: replica
+  # set bootstrap, credential handling and PVC wiring are all solved problems
+  # and re-solving them badly is not what this project is demonstrating.
+  #
+  # ---------------------------------------------------------------------------
+  # THE 16.5.45 PIN IS LOAD-BEARING. Do not "just upgrade" it.
+  # ---------------------------------------------------------------------------
+  # In 2025 Bitnami moved to "Bitnami Secure Images": the free docker.io/bitnami/*
+  # repositories now publish only a rolling `latest` tag, and every previously
+  # published versioned tag was relocated to docker.io/bitnamilegacy/*. Current
+  # chart lines therefore resolve to `bitnami/mongodb:latest`, which collides
+  # head-on with this project's non-negotiable rule: never `latest`, anywhere.
+  #
+  # 16.5.45 is the last line that still pins a real version (8.0.13-debian-12-r0),
+  # and that exact tag is still published under bitnamilegacy. So: pin the chart,
+  # redirect the repository (see values.yaml `mongodb.image.repository`), keep the
+  # chart's own tag.
+  #
+  # Honest trade: bitnamilegacy is archived and will not receive security patches.
+  # Acceptable for local development. NOT acceptable for the EKS deployment —
+  # Milestone 5 must move to a supported source (Atlas, DocumentDB, the official
+  # mongo image behind a hand-written StatefulSet) or pay for Bitnami's catalogue.
+  - name: mongodb
+    version: 16.5.45
+    repository: https://charts.bitnami.com/bitnami
+    # Lets `--set mongodb.enabled=false` point the app at an external database
+    # without deleting the block. Milestone 5 may well use that.
+    condition: mongodb.enabled

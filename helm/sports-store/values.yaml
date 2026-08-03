@@ -1,0 +1,362 @@
+# Default values for the sports-store chart.
+#
+# This file is ENVIRONMENT-AGNOSTIC on purpose. Anything that differs between a
+# laptop and EKS lives in environments/local/values.yaml or
+# environments/production/values.yaml and is layered on with `-f`. The chart
+# itself should never need to know which cluster it is landing in.
+
+# Registry prefix for the six application images. "" locally (minikube loads
+# them into the node's Docker daemon, so they have no registry component);
+# <acct>.dkr.ecr.<region>.amazonaws.com in production.
+#
+# NOT `global.imageRegistry`. That key is consumed by the Bitnami subchart and
+# would rewrite the MongoDB image too, turning it into
+# <our-ecr>/bitnamilegacy/mongodb — which does not exist. Keeping this key
+# outside `global` is what stops our registry leaking into the subchart.
+imageRegistry: ""
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------
+# serviceDefaults — inherited by every entry in `services` below.
+#
+# The merge is SHALLOW (see _helpers.tpl "sports-store.svc"): a service that
+# defines `securityContext` replaces this whole block rather than merging into
+# it. That is deliberate. A deep merge would silently re-add
+# `runAsNonRoot: true` to the gateway, which crashloops it — see the gateway
+# entry for why.
+# ---------------------------------------------------------------------------
+serviceDefaults:
+  replicas: 1
+  component: backend
+  port: 8000
+  probePath: /health
+  # Whether the pod gets JWT_SECRET injected. The gateway verifies nothing —
+  # it only proxies — so it must not receive the signing key.
+  jwt: true
+  # The images exist only inside the minikube node's Docker daemon; there is no
+  # registry to pull from locally. `Always` would send the kubelet to Docker Hub
+  # and fail with ErrImagePull. Production overrides this to Always.
+  imagePullPolicy: IfNotPresent
+  resources:
+    # requests drive scheduling; limits cap the blast radius of one misbehaving
+    # pod. Unset requests would let the scheduler pack the node until everything
+    # degrades at once.
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+  securityContext:
+    runAsNonRoot: true
+    # The Dockerfile already does `USER appuser`, but the kubelet cannot resolve
+    # a username to a UID — runAsNonRoot alone fails at container creation with
+    # "has runAsNonRoot and image has non-numeric user". The numeric UID has to
+    # be restated here.
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+    # readOnlyRootFilesystem is intentionally left off: uvicorn and Python write
+    # to /tmp. Enabling it needs an emptyDir mounted there — worth doing,
+    # deferred rather than claimed untested.
+  service:
+    type: ClusterIP
+  probes:
+    readiness: {initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 3}
+    # Slower and more forgiving than readiness on purpose — a liveness probe
+    # that is too eager turns a slow moment into a restart loop.
+    liveness: {initialDelaySeconds: 15, periodSeconds: 20, failureThreshold: 3}
+
+# ---------------------------------------------------------------------------
+# services — one entry per deployable unit. THE MAP KEY IS THE KUBERNETES
+# OBJECT NAME, and that is not a style choice.
+#
+# gateway/nginx.conf is baked into the gateway image and contains
+# `proxy_pass http://auth-service:8000` for each backend. A release-name prefix
+# (`myrelease-auth-service`) would give the gateway an NXDOMAIN and a 502 on
+# every /api/* request. So no fullname prefixing on Services, and the port stays
+# 8000 rather than the conventional 80.
+#
+# Consequence, stated rather than discovered later: two releases of this chart
+# cannot coexist in one namespace. The alternative is rebuilding the gateway
+# image on every rename, which is worse.
+#
+# Image tags are <semver>-<7-char-git-hash>, never `latest` — enforced by a
+# `fail` in _helpers.tpl, not just by convention.
+# ---------------------------------------------------------------------------
+services:
+
+  auth-service:
+    # Issues the JWTs the other four services verify.
+    image:
+      repository: sports-store/auth-service
+      tag: 0.1.0-e265b9a
+    # Which key in app-secrets holds this service's connection string. One key
+    # per service even though all five currently hold the same value: it makes
+    # the database-per-service boundary explicit and lets one service's
+    # credentials rotate without touching the other four.
+    mongoUriKey: AUTH_MONGO_URI
+    config:
+      # Quoted because ConfigMap values must be strings. Unquoted, YAML parses
+      # this as an integer and the API server rejects the manifest.
+      ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+
+  catalog-service:
+    image:
+      repository: sports-store/catalog-service
+      tag: 0.1.0-97db667
+    mongoUriKey: CATALOG_MONGO_URI
+    # No config: catalog-service calls nothing and has no tunables yet.
+
+  cart-service:
+    image:
+      repository: sports-store/cart-service
+      tag: 0.1.0-c01139d
+    mongoUriKey: CART_MONGO_URI
+    config:
+      # cart-service calls catalog-service over REST to validate SKUs and
+      # prices — it never reads catalog_db directly. That REST hop is what
+      # actually enforces the database-per-service boundary. NOT localhost: a
+      # pod's localhost is the pod itself.
+      CATALOG_URL: http://catalog-service:8000
+
+  order-service:
+    # The checkout saga orchestrator, and the only service that calls three
+    # others — so the one that breaks most visibly if a Service name is wrong.
+    image:
+      repository: sports-store/order-service
+      tag: 0.1.0-01bc69c
+    mongoUriKey: ORDER_MONGO_URI
+    config:
+      CART_URL: http://cart-service:8000
+      CATALOG_URL: http://catalog-service:8000
+      PAYMENT_URL: http://payment-service:8000
+      # Business rules, not infrastructure — in config so pricing can change
+      # without rebuilding an image. Quoted so YAML keeps them as strings;
+      # "5.00" unquoted becomes the float 5.0 and loses the cents formatting.
+      SHIPPING_FLAT_RATE: "5.00"
+      FREE_SHIPPING_THRESHOLD: "100"
+
+  payment-service:
+    image:
+      repository: sports-store/payment-service
+      tag: 0.1.0-f3eb6db
+    mongoUriKey: PAYMENT_MONGO_URI
+    config:
+      # The demo payment gateway declines any card number ending in this
+      # suffix, which is how the saga's failure path (402 -> payment_failed) is
+      # exercised without a real provider. Config, not a secret — knowing it
+      # grants nothing.
+      PAYMENT_FAILURE_SUFFIX: "0000"
+
+  gateway:
+    # NGINX serving the built React bundle and reverse-proxying /api/* to the
+    # five backends. The single entrypoint for the whole system.
+    image:
+      repository: sports-store/gateway
+      # The hash is the GATEWAY repo's commit, not the frontend's, even though
+      # this image contains the frontend bundle. Known limitation of the
+      # named-build-context approach; Milestone 5/6 has the frontend publish
+      # its own image and the gateway copy from it.
+      tag: 0.1.0-6640d7e
+    component: gateway
+    port: 80
+    # `/` serves index.html straight off disk, so this tests nginx itself
+    # without depending on any backend being up.
+    probePath: /
+    jwt: false
+    # No mongoUriKey and no config: nginx.conf and the frontend bundle are both
+    # baked into the image at build time. That is why a change to a backend
+    # Service name means rebuilding this image, not editing a value.
+    resources:
+      # Lower than the Python services: static file serving and proxying, with
+      # no interpreter and no database driver.
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {cpu: 200m, memory: 128Mi}
+    service:
+      # ClusterIP by default so nothing is externally reachable except through
+      # the Ingress. environments/local overrides this to NodePort, because
+      # minikube has no cloud load balancer.
+      type: ClusterIP
+    probes:
+      readiness: {initialDelaySeconds: 3, periodSeconds: 5, failureThreshold: 3}
+      liveness: {initialDelaySeconds: 10, periodSeconds: 20, failureThreshold: 3}
+    securityContext:
+      # `drop: [ALL]` on its own crashloops this pod:
+      #
+      #   nginx: [emerg] chown("/var/cache/nginx/client_temp", 101) failed
+      #                  (1: Operation not permitted)
+      #
+      # The stock nginx image starts its master as root, chowns its cache
+      # directories, then drops workers to the `nginx` user. Drop everything,
+      # then hand back exactly the four capabilities that needs.
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+        add:
+          - CHOWN            # chown /var/cache/nginx/*
+          - SETUID           # drop workers to the nginx user
+          - SETGID           # drop workers to the nginx group
+          - NET_BIND_SERVICE # bind port 80 (< 1024)
+      # KNOWN GAP — deliberately no runAsNonRoot here, unlike the five backends:
+      # the master process is root by design in this image. The fix is
+      # nginxinc/nginx-unprivileged (UID 101 throughout, listens on 8080, needs
+      # none of the capabilities above), which touches the gateway Dockerfile
+      # and the port in three places. Left for a focused change rather than
+      # smuggled in here. This block replacing serviceDefaults.securityContext
+      # wholesale — rather than merging into it — is what keeps runAsNonRoot
+      # from creeping back in.
+
+# ---------------------------------------------------------------------------
+# ingress — ONE rule, `/` -> gateway.
+#
+# The gateway's own nginx.conf already does the path routing (/api/auth ->
+# auth-service, and so on), so duplicating those rules here would mean two
+# places to keep in sync and would bypass the gateway image the whole design is
+# built around. The Ingress controller's only job is to get traffic to the
+# gateway.
+#
+# Milestone 5 changes className to `alb` and adds Load Balancer Controller
+# annotations in environments/production. The routing rule is unchanged — which
+# is the point of putting it here rather than in a raw manifest.
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  host: sports-store.local
+  annotations: {}
+  tls: []
+
+# ---------------------------------------------------------------------------
+# secrets
+#
+# Default is `create: false`: the chart CONSUMES Secrets created out of band by
+# k8s/secrets/apply-secrets.sh. A Secret manifest with real values in
+# stringData is a plaintext credential in git, and base64 is encoding, not
+# encryption.
+#
+# `create: true` renders both Secrets from values supplied at install time
+# (--set, or a gitignored values file). Never commit populated values.
+#
+# Keeping existingSecret as the default is also what lets the External Secrets
+# Operator over AWS Secrets Manager drop in later without touching a template.
+# ---------------------------------------------------------------------------
+secrets:
+  create: false
+
+  # Names, not "existingSecret" — they are the same in both modes. See
+  # _helpers.tpl for why these are not release-prefixed: mongodb.auth.existingSecret
+  # below has to name the second one as a plain string, and subchart values
+  # cannot be templated.
+  #
+  # Consumed by the five backend Deployments.
+  appSecretName: app-secrets
+  # Consumed by the Bitnami subchart. Separate from app-secrets because the key
+  # name is not ours to choose — the chart looks for exactly
+  # `mongodb-root-password`. Keep in sync with mongodb.auth.existingSecret.
+  mongoSecretName: mongodb-credentials
+
+  # Only read when create: true. Left empty so an accidental `create: true`
+  # fails loudly at render time instead of shipping an empty password.
+  jwtSecret: ""
+  mongodbRootUser: root
+  mongodbRootPassword: ""
+
+# ---------------------------------------------------------------------------
+# mongodbData — the PVC that MUST outlive the release.
+#
+# Owned by THIS chart rather than the subchart. If the Bitnami chart creates the
+# PVC, `helm uninstall` deletes it and the catalogue goes with it — and the
+# brief requires persistent data to survive install, upgrade, rollback AND
+# uninstall. See templates/mongodb-pvc.yaml for the two annotations that make
+# that true, and note they defend against two different systems.
+# ---------------------------------------------------------------------------
+mongodbData:
+  enabled: true
+  name: sports-store-mongodb-data
+  size: 1Gi
+  accessModes: [ReadWriteOnce]
+  # "" uses the cluster default StorageClass (minikube: `standard`, hostpath).
+  # Production sets gp3, provisioned by the EBS CSI driver.
+  storageClass: ""
+
+# The seed script's ConfigMap. Name kept stable (not release-prefixed) because
+# mongodb.initdbScriptsConfigMap below has to name it, and a mismatch fails
+# silently as an empty database rather than loudly as an error.
+mongoInitConfigMapName: mongo-init
+
+# ---------------------------------------------------------------------------
+# mongodb — values passed through to the Bitnami subchart.
+# ---------------------------------------------------------------------------
+mongodb:
+  enabled: true
+
+  # WITHOUT THIS the subchart names its Service `<release>-mongodb`, and every
+  # MONGO_URI in app-secrets points at `mongodb:27017` — including the ones
+  # apply-secrets.sh generates. Pinning the name keeps the connection string
+  # true regardless of what the release is called, and matches the Milestone 2
+  # setup where the chart was installed as release "mongodb".
+  fullnameOverride: mongodb
+
+  image:
+    # Only the repository moves. The tag is deliberately NOT set here —
+    # inheriting the chart's own default (8.0.13-debian-12-r0) keeps chart and
+    # image versions a tested pair. Verified before committing, not assumed:
+    #   helm template ... -> docker.io/bitnamilegacy/mongodb:8.0.13-debian-12-r0
+    repository: bitnamilegacy/mongodb
+
+  # One instance, not a replica set. The app's consistency needs are met by a
+  # single node, and a 3-node replica set on one-node minikube costs 3x the
+  # memory to demonstrate nothing extra. Milestone 5 revisits this: on EKS a
+  # standalone MongoDB is a single point of failure worth naming out loud.
+  architecture: standalone
+
+  auth:
+    enabled: true
+    existingSecret: mongodb-credentials
+
+  persistence:
+    enabled: true
+    # Points at the PVC this chart owns (templates/mongodb-pvc.yaml) instead of
+    # letting the subchart create its own. This one line is the whole reason
+    # data survives `helm uninstall`.
+    existingClaim: sports-store-mongodb-data
+
+  # Mounted into /docker-entrypoint-initdb.d/ from the ConfigMap in
+  # templates/mongo-init-configmap.yaml.
+  #
+  # Chosen over the `initdbScripts` value (which inlines script content into
+  # these values) because the script is 250 lines of product data that already
+  # exists as a file. Inlining it means maintaining a copy inside a YAML string:
+  # worse to diff, worse to lint, impossible to run against a local mongosh.
+  #
+  # Idempotency has two independent layers, which is why `helm upgrade` against
+  # a populated PVC cannot double the catalogue:
+  #   1. The Bitnami entrypoint runs /docker-entrypoint-initdb.d/* only when the
+  #      data directory is empty — so on any restart it does not run at all.
+  #   2. The script itself upserts ($setOnInsert + upsert: true), so even a
+  #      forced re-run would not duplicate anything.
+  initdbScriptsConfigMap: mongo-init
+
+  updateStrategy:
+    # NOT cosmetic. The chart defaults a standalone install to RollingUpdate,
+    # which starts the replacement pod before terminating the old one. With one
+    # ReadWriteOnce PVC that deadlocks: the new pod sits Pending on a volume the
+    # old pod still holds, and the old pod waits for the new one to go Ready.
+    # Recreate terminates first, accepting a few seconds of downtime — correct
+    # for a single-replica database.
+    type: Recreate
+
+  networkPolicy:
+    # Off rather than at the chart's default of on. minikube's default CNI does
+    # not enforce NetworkPolicy at all, so an enabled policy would render, show
+    # up in `kubectl get netpol`, and protect precisely nothing. A security
+    # control that looks active but isn't is worse than an absent one. Real
+    # segmentation belongs on EKS where the VPC CNI enforces it — which is why
+    # environments/production turns it back on.
+    enabled: false
+
+  resources:
+    # Higher than the application services because MongoDB uses a chunk of RAM
+    # for its WiredTiger cache.
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: 1000m, memory: 1Gi}

@@ -1,0 +1,47 @@
+{{/*
+================================================================================
+  The only route into the cluster.
+
+  EXACTLY ONE RULE: / -> gateway. The gateway's own nginx.conf already does the
+  path routing (/api/auth -> auth-service, /api/products -> catalog-service, and
+  so on), so duplicating those paths here would mean two places to keep in sync
+  and would bypass the gateway image the whole design is built around. The
+  Ingress controller's only job is to get traffic to the gateway.
+
+  This is also the artifact that carries forward to Milestone 5 unchanged:
+  environments/production swaps className `nginx` -> `alb` and adds Load Balancer
+  Controller annotations. The rule below does not move. That portability is the
+  reason the Ingress is templated at all rather than left as a raw manifest.
+================================================================================
+*/}}
+{{- if .Values.ingress.enabled }}
+{{- $gateway := index .Values.services "gateway" }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway
+  labels: {{- include "sports-store.labels" (dict "ctx" . "name" "gateway" "component" "gateway") | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # The modern field. The deprecated kubernetes.io/ingress.class annotation still
+  # works on many controllers but is not guaranteed past 1.22.
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  # By name, not number, so the gateway's port can change in
+                  # values.yaml without breaking routing here.
+                  name: http
+{{- end }}

@@ -1,0 +1,60 @@
+{{/*
+================================================================================
+  The PVC that has to outlive the release.
+
+  The brief requires MongoDB's data to survive install, upgrade, rollback AND
+  uninstall. Upgrade and rollback are free — they never touch the volume.
+  UNINSTALL is the one that can actually lose the catalogue, and by default it
+  does: if the Bitnami subchart creates the PVC, it belongs to the release, and
+  `helm uninstall` deletes it.
+
+  So the PVC is declared here, in the parent chart, and handed to the subchart
+  via `mongodb.persistence.existingClaim`. That inverts the ownership: Helm
+  still tracks it, but the two annotations below take it back out of the
+  destruction path.
+
+  Reinstall behaviour: under the same release name and namespace, Helm 3+ adopts
+  the surviving PVC because its meta.helm.sh/release-name annotation still
+  matches. VERIFY THIS with a real uninstall -> install -> product count cycle
+  rather than trusting the paragraph you are reading; see README.md §Verify.
+================================================================================
+*/}}
+{{- if .Values.mongodbData.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.mongodbData.name }}
+  labels: {{- include "sports-store.labels" (dict "ctx" . "name" "mongodb" "component" "database") | nindent 4 }}
+  annotations:
+    # ---------------------------------------------------------------------
+    # TWO annotations, TWO different systems. They are not redundant.
+    # ---------------------------------------------------------------------
+
+    # Helm: keep this resource when the release is uninstalled. Without it the
+    # PVC goes with the release and MongoDB comes back empty.
+    helm.sh/resource-policy: keep
+
+    # Argo CD: Milestone 7 turns on automated sync with pruning and self-heal.
+    # Argo prunes by its own rules and has never heard of helm.sh/resource-policy
+    # — it renders this chart with `helm template` and applies the output, so
+    # Helm's release lifecycle is not even in play. Prune=false keeps a sync from
+    # removing it; Delete=false keeps deleting the Application from taking the
+    # data with it. Added now because retrofitting it after a demo has already
+    # eaten the database is not a fun afternoon.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: {{- toYaml .Values.mongodbData.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.mongodbData.size }}
+  {{- if .Values.mongodbData.storageClass }}
+  storageClassName: {{ .Values.mongodbData.storageClass }}
+  {{- end }}
+  {{- /*
+    storageClassName omitted entirely when empty, rather than set to "".
+    They are NOT the same thing: "" means "no StorageClass, bind to a manually
+    provisioned PV only" and would leave this Pending forever on minikube.
+    Omitting the field means "use the cluster default" — `standard` locally,
+    and whatever production/values.yaml sets on EKS.
+  */}}
+{{- end }}

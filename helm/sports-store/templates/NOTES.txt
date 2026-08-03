@@ -1,0 +1,48 @@
+{{- $gateway := index .Values.services "gateway" }}
+{{- $gwType := (include "sports-store.svc" (dict "svc" $gateway "defaults" .Values.serviceDefaults) | fromYaml).service.type }}
+
+  {{ .Chart.Name }} {{ .Chart.Version }} — release {{ .Release.Name }}, revision {{ .Release.Revision }}, namespace {{ .Release.Namespace }}
+
+REACHING THE APP
+
+  The gateway is the only externally reachable component. The five backends are
+  ClusterIP by design — if you can reach one directly, something is wrong.
+{{ if .Values.ingress.enabled }}
+  Ingress:   http://{{ .Values.ingress.host }}   (class: {{ .Values.ingress.className }})
+{{- if eq .Values.ingress.className "nginx" }}
+             needs `minikube addons enable ingress` and an /etc/hosts entry:
+               echo "$(minikube ip)  {{ .Values.ingress.host }}" | sudo tee -a /etc/hosts
+{{- end }}
+{{- end }}
+{{- if eq $gwType "NodePort" }}
+  NodePort:  http://$(minikube ip):{{ $gateway.service.nodePort }}
+             always works, no addon and no /etc/hosts entry needed
+{{- end }}
+
+CHECK IT CAME UP
+
+  kubectl get pods -n {{ .Release.Namespace }}
+  kubectl get pvc  -n {{ .Release.Namespace }} {{ .Values.mongodbData.name }}
+
+  Products seeded (expect 20, never 40):
+    kubectl exec -n {{ .Release.Namespace }} deploy/mongodb -- \
+      mongosh catalog_db --quiet --eval 'db.products.countDocuments()' \
+      -u "$MONGO_ROOT_USERNAME" -p "$MONGO_ROOT_PASSWORD" --authenticationDatabase admin
+
+{{- if not .Values.secrets.create }}
+
+SECRETS
+
+  This release consumes Secrets it did not create: {{ .Values.secrets.appSecretName }},
+  {{ .Values.secrets.mongoSecretName }}. If pods are stuck in CreateContainerConfigError,
+  that is what is missing:
+
+    ./k8s/secrets/apply-secrets.sh
+{{- end }}
+
+LIFECYCLE
+
+  helm upgrade  {{ .Release.Name }} . -f environments/local/values.yaml
+  helm rollback {{ .Release.Name }} <revision>
+  helm uninstall {{ .Release.Name }}     # {{ .Values.mongodbData.name }} SURVIVES this
+                                          # on purpose — reinstalling keeps the data

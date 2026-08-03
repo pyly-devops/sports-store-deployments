@@ -1,0 +1,48 @@
+# Local cluster (minikube) overrides.
+#
+#   helm install sports-store . -n sports-store --create-namespace \
+#     -f environments/local/values.yaml
+#
+# Everything here is a fact about the LAPTOP, not about the application. That
+# separation is the requirement: the chart stays environment-agnostic and each
+# environment supplies only what it actually differs on.
+
+# No registry prefix. `make k8s-images` in cloudcart-workspace builds on the host
+# and hands each image to the node with `minikube image load`, so the images live
+# in the node's Docker daemon with no registry component at all.
+imageRegistry: ""
+
+services:
+  gateway:
+    service:
+      # NodePort rather than LoadBalancer: minikube has no cloud load balancer to
+      # provision, so a LoadBalancer Service would sit <pending> forever unless
+      # `minikube tunnel` is running. NodePort works on any local cluster with
+      # nothing extra.
+      #
+      # A NodePort Service still gets a ClusterIP, so the Ingress routes to it
+      # perfectly well. The two are complements, not alternatives — the Ingress
+      # is the path that carries forward to EKS, the NodePort is the one that
+      # always works.
+      type: NodePort
+      # Pinned so the URL in the README survives a delete and reinstall.
+      nodePort: 30080
+
+ingress:
+  # minikube's ingress addon (`minikube addons enable ingress`) installs an
+  # ingress-nginx controller with this class.
+  className: nginx
+  host: sports-store.local
+
+mongodbData:
+  # "" -> omitted from the manifest -> minikube's default `standard`
+  # StorageClass (hostpath provisioner).
+  storageClass: ""
+  size: 1Gi
+
+mongodb:
+  networkPolicy:
+    # Stays off locally. minikube's default CNI does not enforce NetworkPolicy,
+    # so an enabled policy would render, appear in `kubectl get netpol`, and
+    # protect precisely nothing.
+    enabled: false
