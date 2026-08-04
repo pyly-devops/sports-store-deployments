@@ -1,0 +1,25 @@
+# Default StorageClass for the cluster.
+#
+# EKS ships a `gp2` class but does not mark it default, so a PVC that omits
+# storageClassName stays Pending forever on "no storage class is set" — which
+# is how a chart's default persistence config behaves. This class fixes that.
+#
+# provisioner is ebs.csi.aws.com directly, not the in-tree
+# kubernetes.io/aws-ebs that gp2 still uses: the in-tree path only works via
+# CSI migration and produces legacy-format PVs.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+# WaitForFirstConsumer, not Immediate: an EBS volume is pinned to one AZ, so
+# binding before the pod is scheduled can strand the volume in an AZ with no
+# node able to take the pod.
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  type: gp3
+  encrypted: "true"
