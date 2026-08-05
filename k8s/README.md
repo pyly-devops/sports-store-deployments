@@ -212,7 +212,7 @@ Then drive the application itself: register → login → add to cart → checko
 and confirm stock decremented and the order reached `paid`. A card ending
 `0000` must return HTTP 402 and leave the order `payment_failed`.
 
-Recorded results live in `docs/PROGRESS.md` in `cloudcart-workspace`.
+Recorded results live in `docs/status.md` in `cloudcart-workspace`.
 
 ---
 

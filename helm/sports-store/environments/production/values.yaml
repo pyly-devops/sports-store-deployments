@@ -1,19 +1,26 @@
-# EKS overrides. NOT YET EXERCISED — Milestone 5 does that.
+# EKS overrides.
 #
-# Committed now, in this shape, because writing it is how the chart proves it is
-# actually environment-agnostic: everything below is a value, not a template
-# change. If any of it had needed a new `if` in a template, the chart would have
-# been wrong.
+# Written in Milestone 3 to prove the chart is actually environment-agnostic:
+# everything below is a value, not a template change. Milestone 5 exercised it
+# for real and replaced the placeholders.
 #
 #   helm upgrade --install sports-store . -n sports-store \
 #     -f environments/production/values.yaml \
 #     -f environments/production/images/auth-service.yaml \
 #     ... (one -f per service; Milestone 7 hands this list to Argo CD)
-#
-# The ACCOUNT ID AND REGION BELOW ARE PLACEHOLDERS. Milestone 4 creates the ECR
-# repos and this line gets its real value then.
 
-imageRegistry: "000000000000.dkr.ecr.eu-west-1.amazonaws.com"
+# The account ID is not a credential. The rule is "no secrets in git", and an
+# account ID is not one — it appears in every role ARN and every image
+# reference, and it authenticates nothing on its own. It belongs in the file
+# rather than a --set for three reasons: Milestone 7 renders this chart from
+# git with no operator present, so a value only a human can supply would be a
+# landmine for Argo CD; Milestone 6 validates by running `helm template` in CI,
+# which needs real image references; and a --set makes the deploy
+# unreproducible from the repo alone.
+#
+# If it ever has to come out, it is one key — replaceable by an Argo CD
+# helm.parameters entry with no template change.
+imageRegistry: "638920471904.dkr.ecr.us-east-1.amazonaws.com"
 
 serviceDefaults:
   # Always, not IfNotPresent: with a real registry the node should re-pull on
@@ -40,8 +47,18 @@ ingress:
   # The whole Milestone 5 ingress change: a class swap and annotations. The
   # routing rule in templates/ingress.yaml does not move.
   className: alb
-  # Replaced with the real DNS name once Route 53 is in play.
-  host: sports-store.example.com
+  # DELIBERATELY EMPTY. templates/ingress.yaml omits the `host` field entirely
+  # when this is unset, and a rule with no host matches any Host header — so
+  # the app is served on the ALB's own k8s-*.elb.amazonaws.com name.
+  #
+  # This project owns no domain. Setting a hostname we do not control would
+  # produce an Ingress that renders, an ALB that provisions, and a 404 for
+  # every request, because no rule would ever match.
+  #
+  # Adding a real one later is a values change and nothing else: set this,
+  # add certificate-arn + ssl-redirect below, and no template moves. That is
+  # Route 53 + ACM, held back as the Milestone 9 extension.
+  host: ""
   annotations:
     # internet-facing + ip target type is what puts the ALB in the public subnets
     # while sending traffic straight to pod IPs (VPC CNI), skipping the extra
@@ -61,16 +78,49 @@ mongodbData:
 
 mongodb:
   networkPolicy:
-    # ON here, unlike local. The VPC CNI actually enforces NetworkPolicy on EKS,
-    # so this stops being decorative and starts being a control: only labelled
-    # app pods may reach 27017.
-    enabled: true
+    # OFF, and this is a correction rather than a preference.
+    #
+    # This was `true` with a comment claiming it restricted 27017 to labelled
+    # app pods. It did not, for two independent reasons, both checked rather
+    # than assumed:
+    #
+    #   1. Bitnami's networkPolicy.allowExternal defaults to true, so the
+    #      rendered policy's ingress rule is `- ports: [{port: 27017}]` with no
+    #      `from:` at all. That accepts connections from anywhere in the
+    #      cluster — it is not a restriction.
+    #   2. The vpc-cni add-on has no ENABLE_NETWORK_POLICY, so the CNI does not
+    #      enforce NetworkPolicy on this cluster in the first place. The object
+    #      would appear in `kubectl get netpol` and do nothing.
+    #
+    # environments/local/values.yaml already argues that a security control
+    # which looks active but isn't is worse than an absent one. Same rule here.
+    #
+    # Doing it properly is two changes that belong together, and neither is
+    # Milestone 5's: ENABLE_NETWORK_POLICY = "true" in the vpc-cni add-on's
+    # configuration_values (envs/prod/addons.tf — a Terraform PR and a
+    # re-apply), plus a real default-deny and per-service allow set covering
+    # the six app pods, which this chart has no template for yet.
+    enabled: false
 
   resources:
     requests: {cpu: 250m, memory: 512Mi}
     limits: {cpu: 1000m, memory: 2Gi}
 
-  # KNOWN GAP, carried forward deliberately rather than hidden: this is still the
-  # archived bitnamilegacy image and a single standalone node — an unpatched
-  # single point of failure holding every order. Milestone 5 has to resolve it
-  # (Atlas, DocumentDB, or a supported image) before this file is used for real.
+  # KNOWN GAP, carried forward deliberately rather than hidden.
+  #
+  # This is the archived bitnamilegacy image on a single standalone node: an
+  # unpatched single point of failure holding every order, on one AZ-bound EBS
+  # volume in the same AZ as the whole node group.
+  #
+  # Milestone 5 kept it on purpose. The brief requires MongoDB's storage to be
+  # a PVC dynamically provisioned by the EBS CSI driver, and keeping the
+  # database in-cluster is what makes that true of the REAL workload rather
+  # than a throwaway test volume. Moving to Atlas or DocumentDB would satisfy
+  # the durability concern while removing the thing the milestone has to
+  # demonstrate.
+  #
+  # The chart is already shaped for the swap when it comes: Chart.yaml carries
+  # `condition: mongodb.enabled`, so an external database is an environment
+  # override here, not a template change. The natural home is the extension
+  # milestone, paired with External Secrets + AWS Secrets Manager delivering
+  # the connection string.
