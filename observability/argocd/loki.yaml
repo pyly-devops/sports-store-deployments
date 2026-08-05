@@ -1,0 +1,43 @@
+# Loki, as an Argo CD Application.
+#
+# Wave 0: nothing depends on Loki's CRDs (it has none), but Alloy is useless
+# without somewhere to ship to, so it sits a wave later.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  namespace: argocd # M7: the namespace Argo CD itself runs in
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    # Without this, deleting the Application orphans everything it created,
+    # including PVCs that keep billing.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default # M7: the AppProject name
+
+  # Multi-source: chart from upstream, values from this repo. Keeps our
+  # configuration reviewable in Git without vendoring a third-party chart.
+  sources:
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: loki
+      # Pinned exactly - `latest` is banned project-wide.
+      targetRevision: 7.2.0
+      helm:
+        valueFiles:
+          - $values/observability/loki/values.yaml
+    - repoURL: https://github.com/pyly-devops/sports-store-deployments.git
+      targetRevision: main
+      # `ref` only publishes the repo for valueFiles above; it renders nothing.
+      ref: values
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

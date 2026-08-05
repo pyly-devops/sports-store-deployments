@@ -1,0 +1,28 @@
+{{/*
+  The dashboard, handed to Grafana's sidecar.
+
+  The sidecar watches every namespace for ConfigMaps carrying the label below
+  and writes their contents into Grafana's provisioning directory. That is why
+  this needs no Grafana restart, no API call and no credentials — and why the
+  dashboard survives Grafana having no persistent volume at all.
+
+  `.Files.Get` keeps the JSON in its own file rather than inlined here. See
+  Chart.yaml for why that matters.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sports-store-overview-dashboard
+  labels:
+    # The label the sidecar selects on. Its value is the string "1", not the
+    # boolean true — quoting is required, and an unquoted `true` here means
+    # the sidecar never finds the ConfigMap and the dashboard never appears,
+    # with nothing logging an error.
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: sports-store
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  # The key becomes the filename on disk. It must end in .json or the sidecar
+  # writes it out and Grafana's provisioner ignores it.
+  sports-store-overview.json: |-
+{{ .Files.Get "dashboards/sports-store-overview.json" | indent 4 }}
