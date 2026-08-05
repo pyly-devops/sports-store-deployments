@@ -1,0 +1,87 @@
+# AWS Load Balancer Controller — install values for the `sports-store` cluster.
+#
+#   helm upgrade --install aws-load-balancer-controller aws-load-balancer-controller \
+#     --repo https://aws.github.io/eks-charts --version 3.5.0 \
+#     --namespace kube-system \
+#     -f cluster/aws-load-balancer-controller-values.yaml \
+#     --set vpcId="$(aws ec2 describe-vpcs \
+#           --filters Name=tag:Name,Values=sports-store-vpc \
+#           --query 'Vpcs[0].VpcId' --output text)" \
+#     --wait
+#
+# WHY THIS IS INSTALLED BY HAND AND NOT BY TERRAFORM
+# envs/prod deliberately has no `kubernetes` or `helm` provider. The HCP run
+# role has no cluster admin access by design, so giving Terraform a provider
+# that could install this would mean reversing that decision for the sake of
+# one Helm release. Milestone 7 moves it into an Argo CD Application, which is
+# where it belongs.
+#
+# vpcId is the ONE value deliberately not in this file. The VPC is recreated by
+# every fresh `terraform apply` on this intentionally ephemeral infrastructure,
+# so a committed ID is stale within a day. Everything else here is stable for
+# the lifetime of the AWS account.
+#
+# CHART VERSION: pin it, never float. Note the chart line jumped from 1.17.1
+# (appVersion v2.17.1) straight to 3.0.0 when AWS aligned chart and controller
+# versioning — so "3.x" is not the major leap it looks like.
+
+clusterName: sports-store
+region: us-east-1
+
+serviceAccount:
+  # Created by the chart, not by hand and not by eksctl. The IAM role already
+  # exists (Terraform, envs/prod/irsa.tf) and its trust policy is scoped to
+  # exactly system:serviceaccount:kube-system:aws-load-balancer-controller.
+  #
+  # BOTH THE NAME AND THE NAMESPACE ARE LOAD-BEARING. Install this into any
+  # other namespace, or rename the ServiceAccount, and the trust condition no
+  # longer matches: the controller starts cleanly, logs an
+  # AssumeRoleWithWebIdentity failure, and the Ingress simply never gets an
+  # address. That failure looks like a subnet-discovery problem and is not.
+  #
+  # The ARN lives here rather than in a --set because the annotation key
+  # contains dots, which must be backslash-escaped inside --set. A footgun
+  # with no upside.
+  create: true
+  name: aws-load-balancer-controller
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::638920471904:role/sports-store-aws-load-balancer-controller
+
+# One replica, not the chart's default two. Only one pod is ever the active
+# leader; the others are warm standby. On a two-node cluster this small the
+# second replica is ~128 MiB spent on nothing.
+#
+# The trade, stated: losing the node running it means a few minutes with no
+# Ingress reconciliation. It does NOT interrupt traffic through an ALB that has
+# already been provisioned — the ALB is AWS-managed and keeps serving.
+replicaCount: 1
+
+# The chart ships `resources: {}`, which leaves the controller BestEffort and
+# effectively invisible to the scheduler — while it runs with
+# priorityClassName: system-cluster-critical, so it can preempt application
+# pods it was never accounted against. On a 2-node cluster that is a real risk,
+# not a theoretical one.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+# Restated rather than inherited, because "do we need cert-manager?" is the
+# first question anyone asks about this chart. No. With this false the chart
+# generates its own CA and webhook serving certificate with genCA/genSignedCert
+# and writes the matching caBundle into both webhook configurations in the same
+# render, so the two cannot drift. Installing cert-manager to satisfy one
+# certificate would mean a second Helm release and a second CRD set.
+#
+# Do NOT reach for keepTLSSecret: true to stop the cert regenerating on
+# upgrade. It is implemented with `lookup`, which returns empty under
+# `helm template` — so it would break the moment Milestone 7 puts this under
+# Argo CD. Regeneration is harmless: the Secret and the caBundle change
+# together.
+enableCertManager: false
+
+# Matches ingress.className in helm/sports-store/environments/production/values.yaml.
+# The chart creates the IngressClass and its IngressClassParams under this name.
+ingressClass: alb
