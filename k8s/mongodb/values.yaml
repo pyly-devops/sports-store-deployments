@@ -71,7 +71,7 @@ persistence:
 #      data directory is empty -- so on any restart it does not run at all.
 #   2. The script itself upserts ($setOnInsert + upsert: true), so even a
 #      forced re-run would not duplicate anything.
-# Both were verified against this cluster; see docs/PROGRESS.md for the counts.
+# Both were verified against this cluster; see docs/status.md for the counts.
 initdbScriptsConfigMap: mongo-init
 
 updateStrategy:
