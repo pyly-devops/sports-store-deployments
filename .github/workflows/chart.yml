@@ -1,0 +1,227 @@
+# Chart CI (Milestone 7). Deferred here rather than into Milestone 6 because
+# Argo CD turns a bad chart commit into a live cluster change — this repo
+# gets its own gate for exactly the reason the app repos already have one.
+#
+# Two independent jobs: `chart` renders and guards the Helm chart itself;
+# `argocd-manifests` schema-validates the plain-YAML argocd/ and cluster/
+# trees. Deliberately not `helm template`-ing argocd/ — it is plain
+# Kubernetes YAML, not a chart, and rendering it would be a category error.
+
+name: chart
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pinned, not "latest stable" — a floating helm is a floating render, and
+  # this job's whole point is a reproducible one.
+  HELM_VERSION: v3.16.3
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      # The vendored .tgz is a hard runtime dependency of GitOps, not a
+      # convenience: `helm dependency build` is only a fallback the
+      # repo-server's reposerver/repository/repository.go triggers on a
+      # "missing in charts/ directory" error, so if the .tgz and Chart.lock
+      # ever disagree, Argo CD would silently start pulling from
+      # charts.bitnami.com at sync time instead of failing loudly here.
+      - name: Assert vendored MongoDB chart matches Chart.lock
+        working-directory: helm/sports-store
+        run: |
+          set -euo pipefail
+          version=$(grep '^  version:' Chart.lock | head -1 | awk '{print $2}')
+          test -f "charts/mongodb-${version}.tgz" || {
+            echo "::error::charts/mongodb-${version}.tgz missing — Chart.lock pins ${version}" >&2
+            exit 1
+          }
+
+      - name: helm dependency list (proves no network fetch is needed)
+        working-directory: helm/sports-store
+        run: |
+          set -euo pipefail
+          # HTTPS_PROXY pointed at a closed port: if the vendored .tgz isn't
+          # doing its job, `helm dependency build` would try to reach
+          # charts.bitnami.com and this step hangs/fails instead of the real
+          # CI run doing so silently against a flaky network.
+          HTTPS_PROXY=http://127.0.0.1:1 helm dependency list .
+
+      - name: Render production
+        working-directory: helm/sports-store
+        run: |
+          helm template sports-store . \
+            -f environments/production/values.yaml \
+            -f environments/production/images/auth-service.yaml \
+            -f environments/production/images/catalog-service.yaml \
+            -f environments/production/images/cart-service.yaml \
+            -f environments/production/images/order-service.yaml \
+            -f environments/production/images/payment-service.yaml \
+            -f environments/production/images/gateway.yaml \
+            > /tmp/rendered-production.yaml
+
+      - name: Guard — no :latest, anywhere
+        run: |
+          if grep -E ':latest\b' /tmp/rendered-production.yaml; then
+            echo "::error::a rendered image tag is :latest — CLAUDE.md forbids this outright" >&2
+            exit 1
+          fi
+
+      - name: Guard — exactly 6 well-formed ECR image references
+        run: |
+          set -euo pipefail
+          count=$(grep -oE '[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/sports-store/[a-z-]+:[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{7}\b' /tmp/rendered-production.yaml | sort -u | wc -l)
+          if [ "$count" -lt 6 ]; then
+            echo "::error::found $count well-formed <ecr>/sports-store/<x>:<semver>-<7hex> image refs, expected at least 6" >&2
+            exit 1
+          fi
+
+      - name: Guard — no Secret, no stringData, no Helm hooks
+        run: |
+          set -euo pipefail
+          if grep -E '^kind:\s*Secret\b' /tmp/rendered-production.yaml; then
+            echo "::error::chart rendered a Secret — the chart must only ever consume existingSecret, never create one on EKS" >&2
+            exit 1
+          fi
+          if grep -E '^\s*stringData:' /tmp/rendered-production.yaml; then
+            echo "::error::stringData found in the render — plaintext credential shape" >&2
+            exit 1
+          fi
+          if grep -E 'helm\.sh/hook' /tmp/rendered-production.yaml; then
+            echo "::error::a Helm hook was rendered — none are expected in this chart" >&2
+            exit 1
+          fi
+
+      - name: Guard — no placeholder AWS account IDs
+        run: |
+          if grep -E '123456789012|ACCOUNT_ID|<account' /tmp/rendered-production.yaml; then
+            echo "::error::placeholder account ID found in the render" >&2
+            exit 1
+          fi
+
+      - name: Guard — MongoDB PVC keeps both destroyer-specific annotations
+        run: |
+          set -euo pipefail
+          pvc=$(awk '/^kind: PersistentVolumeClaim$/{f=1} f{print} /^---$/{if(f)exit}' /tmp/rendered-production.yaml)
+          echo "$pvc" | grep -q 'helm.sh/resource-policy: keep' || { echo "::error::PVC missing helm.sh/resource-policy: keep" >&2; exit 1; }
+          echo "$pvc" | grep -q 'argocd.argoproj.io/sync-options: Prune=false,Delete=false' || { echo "::error::PVC missing the Argo CD prune guard annotation" >&2; exit 1; }
+          echo "$pvc" | grep -q 'storageClassName: gp3' || { echo "::error::PVC storageClassName is not gp3 in production" >&2; exit 1; }
+
+      - name: Guard — MongoDB image stays pinned to bitnamilegacy
+        run: |
+          grep -q 'bitnamilegacy/mongodb:8.0.13-debian-12-r0' /tmp/rendered-production.yaml || {
+            echo "::error::MongoDB image is not the pinned bitnamilegacy tag" >&2
+            exit 1
+          }
+
+      - name: Drift guard — Application valueFiles vs. images/ on disk
+        run: |
+          set -euo pipefail
+          # The single highest-value check in this job: add a 7th service's
+          # images/*.yaml file and forget to add it to the Application's
+          # valueFiles, and Argo CD silently deploys the tag baked into
+          # values.yaml forever — a green PR, a green sync, and a stale image
+          # in production with nothing anywhere saying so.
+          on_disk=$(ls helm/sports-store/environments/production/images/*.yaml | sort)
+          referenced=$(grep -oE 'environments/production/images/[a-z-]+\.yaml' argocd/applications/50-sports-store.yaml | sed 's#^#helm/sports-store/#' | sort -u)
+          diff <(echo "$on_disk") <(echo "$referenced") || {
+            echo "::error::images/*.yaml on disk does not match argocd/applications/50-sports-store.yaml's valueFiles" >&2
+            exit 1
+          }
+
+      - name: helm lint (local)
+        working-directory: helm/sports-store
+        run: helm lint . -f environments/local/values.yaml
+
+      - name: helm lint (production)
+        working-directory: helm/sports-store
+        run: |
+          helm lint . \
+            -f environments/production/values.yaml \
+            -f environments/production/images/auth-service.yaml \
+            -f environments/production/images/catalog-service.yaml \
+            -f environments/production/images/cart-service.yaml \
+            -f environments/production/images/order-service.yaml \
+            -f environments/production/images/payment-service.yaml \
+            -f environments/production/images/gateway.yaml
+
+  argocd-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar xz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: kubeconform argocd/ and cluster/
+        run: |
+          kubeconform -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -ignore-missing-schemas \
+            $(find argocd cluster -name '*.yaml' ! -path 'argocd/install/*')
+
+      - name: Guard — no helm.skipCrds anywhere
+        run: |
+          # Only a real `skipCrds:` key trips this — not this file's own
+          # comments about never setting one.
+          if grep -rnE '^\s*skipCrds\s*:' argocd/; then
+            echo "::error::helm.skipCrds must never be set — the ALB controller's CRDs ship in crds/, which helm template skips by default but Argo CD's --include-crds does not; skipCrds would silently remove them" >&2
+            exit 1
+          fi
+
+      - name: Guard — every Application has prune and selfHeal
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in argocd/applications/*.yaml; do
+            grep -q 'prune: true' "$f" || { echo "::error file=$f::missing prune: true"; fail=1; }
+            grep -q 'selfHeal: true' "$f" || { echo "::error file=$f::missing selfHeal: true"; fail=1; }
+          done
+          exit $fail
+
+      - name: Guard — every deployments-repo-sourced Application/root tracks main
+        run: |
+          set -euo pipefail
+          # Only Applications whose source IS this repo must track main — the
+          # chart-sourced Applications (external-secrets, aws-load-balancer-controller)
+          # correctly pin a chart VERSION instead, which is a different axis
+          # entirely. Selecting on repoURL, not "every file", is what tells
+          # those two apart.
+          fail=0
+          for f in argocd/bootstrap.yaml argocd/applications/*.yaml; do
+            if grep -q 'repoURL: https://github.com/pyly-devops/sports-store-deployments' "$f"; then
+              grep -q 'targetRevision: main' "$f" || { echo "::error file=$f::sourced from this repo but does not track main"; fail=1; }
+            fi
+          done
+          exit $fail
+
+      - name: Guard — ServerSideApply=true present on the ESO Application
+        run: |
+          grep -q 'ServerSideApply=true' argocd/applications/10-external-secrets.yaml || {
+            echo "::error::external-secrets Application is missing syncOptions: [ServerSideApply=true] — its ClusterSecretStore CRD renders past kubectl's 262144-byte last-applied-configuration ceiling" >&2
+            exit 1
+          }
+
+      - name: actionlint
+        uses: reviewdog/action-actionlint@v1
+        with:
+          fail_level: error

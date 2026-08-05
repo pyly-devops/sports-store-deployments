@@ -1,0 +1,88 @@
+# Wave 20: the sports-store Application's Ingress (wave 30) needs the
+# controller and its IngressClass/IngressClassParams CRDs to exist first.
+#
+# Moved here from cluster/aws-load-balancer-controller-values.yaml (M3/M5) —
+# same values, minus `--set vpcId`, which is replaced by vpcTags below.
+# vpcId was the last genuine --set in the project; a committed VPC ID would
+# be stale within a day since this infra is recreated on every fresh
+# `terraform apply`. IMDS auto-discovery would also work (the EKS module sets
+# http_put_response_hop_limit = 2), but vpcTags is deterministic, committable,
+# and survives any future IMDS hardening.
+#
+# THE TRAP: this chart ships its CRDs in crds/, not templates/, which
+# `helm template` normally skips entirely — IngressClassParams and
+# TargetGroupBinding would be missing and templates/ingressclass.yaml would
+# fail to render. Argo CD passes --include-crds by default
+# (util/helm/cmd.go), so it works here. Repo rule, asserted in chart.yml CI:
+# never set helm.skipCrds.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aws-load-balancer-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+spec:
+  project: platform
+  source:
+    repoURL: https://aws.github.io/eks-charts
+    chart: aws-load-balancer-controller
+    targetRevision: 3.5.0
+    helm:
+      releaseName: aws-load-balancer-controller
+      valuesObject:
+        clusterName: sports-store
+        region: us-east-1
+
+        vpcTags:
+          Name: sports-store-vpc
+
+        serviceAccount:
+          create: true
+          name: aws-load-balancer-controller
+          annotations:
+            eks.amazonaws.com/role-arn: arn:aws:iam::638920471904:role/sports-store-aws-load-balancer-controller
+
+        # One replica: only one pod is ever the active leader, the rest are
+        # warm standby. On a 2-node cluster this small the second replica is
+        # ~128MiB spent on nothing. Trade, stated: losing the node running it
+        # means a few minutes with no Ingress reconciliation — it does NOT
+        # interrupt traffic through an ALB already provisioned; that ALB is
+        # AWS-managed and keeps serving on its own.
+        replicaCount: 1
+
+        # The chart ships resources: {}, leaving the controller BestEffort
+        # and invisible to the scheduler, while it runs with
+        # priorityClassName: system-cluster-critical and can preempt
+        # application pods it was never accounted against (T10).
+        resources:
+          requests: {cpu: 50m, memory: 128Mi}
+          limits: {memory: 256Mi}
+
+        # No cert-manager: with this false the chart generates its own CA and
+        # webhook serving cert (genCA/genSignedCert) and writes the matching
+        # caBundle into both webhook configs in the same render, so they
+        # cannot drift. Do NOT set keepTLSSecret: true to stop the
+        # regeneration on upgrade — it's implemented with `lookup`, which
+        # returns empty under Argo CD's render path, and would break exactly
+        # the thing this Application depends on.
+        enableCertManager: false
+
+        # Matches ingress.className in
+        # helm/sports-store/environments/production/values.yaml. The chart
+        # creates the IngressClass and its IngressClassParams under this
+        # name.
+        ingressClass: alb
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff: {duration: 15s, factor: 2, maxDuration: 5m}

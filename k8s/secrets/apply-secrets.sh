@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 #
+# MINIKUBE/M2 ARTIFACT — SUPERSEDED ON EKS. As of Milestone 7, the
+# `sports-store-prod` cluster gets these two Secrets from External Secrets
+# Operator (cluster/external-secrets/) reading AWS Secrets Manager, not from
+# this script. Running this against that cluster fights ESO's
+# creationPolicy: Owner and produces a T16-style Secret-ownership conflict.
+# Kept for local minikube use only.
+#
 # Create the two Secrets the application needs, from the local .env file.
 #
 #   cp k8s/secrets/.env.example k8s/secrets/.env   # then edit it

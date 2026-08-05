@@ -1,5 +1,12 @@
 # Sports Store — raw Kubernetes manifests
 
+> **Milestone 2/minikube artifact, superseded on EKS.** Nothing in this
+> directory is applied to the EKS cluster — Milestone 3's Helm chart replaced
+> it there, and Milestone 7 replaced the one thing the chart didn't cover
+> (`namespace.yaml`, the two Secrets) with `cluster/` and Argo CD's
+> `ExternalSecret`s. Kept for local minikube use and as the longhand reference
+> `_helpers.tpl` was written against — never apply this to `sports-store-prod`.
+
 The whole application on a local Kubernetes cluster: MongoDB via the Bitnami
 Helm chart, five FastAPI services, and the NGINX gateway.
 

@@ -1,0 +1,28 @@
+# Wave 20: the PVC in wave 30's sports-store Application names `gp3` by
+# storageClassName, so the class must exist first. (File is numbered 30 to
+# match its position in argocd/'s listing; the sync-wave annotation below —
+# not the filename — is what Argo actually orders on.)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: storageclass
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+spec:
+  project: platform
+  source:
+    repoURL: https://github.com/pyly-devops/sports-store-deployments
+    targetRevision: main
+    path: cluster/storageclass
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    retry:
+      limit: 5
+      backoff: {duration: 15s, factor: 2, maxDuration: 5m}

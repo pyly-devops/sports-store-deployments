@@ -1,9 +1,32 @@
 # Cluster-scoped resources
 
-Objects that belong to the cluster itself rather than to the application —
-applied once per cluster, before any release.
+Objects that belong to the cluster itself rather than to the application.
 
-## `storageclass-gp3.yaml`
+**As of Milestone 7, this directory is managed by Argo CD, not applied by
+hand.** `argocd/applications/00-namespaces.yaml`, `30-storageclass.yaml` and
+`20-cluster-secrets.yaml` point at the three subdirectories below (each one a
+directory-type Application, so a values file can never accidentally be
+ingested as a manifest). The `kubectl apply` commands in this file are the
+pre-M7 manual procedure — kept here for the bootstrap runbook's T9 cleanup
+step and for anyone reading this before Argo CD exists on a fresh cluster, not
+as the normal way to apply these anymore.
+
+## `namespaces/`
+
+`sports-store.yaml` and `external-secrets.yaml`. Applied in Argo CD's wave 0 —
+before anything that needs to be created inside them.
+
+## `external-secrets/`
+
+`clustersecretstore.yaml` (the AWS Secrets Manager backend, IRSA-authenticated)
+plus the two `ExternalSecret`s that replace `k8s/secrets/apply-secrets.sh`'s
+manual `kubectl create secret`. See
+`argocd/README.md` for the ESO chart install and the password-rotation
+runbook (T5) — rotating `MONGO_ROOT_PASSWORD` in Secrets Manager now
+propagates into the cluster automatically, which makes the existing "rotate
+the Secret without rotating the Mongo user" trap worse, not better.
+
+## `storageclass/gp3.yaml`
 
 Makes `gp3` the cluster's **default** StorageClass.
 
@@ -38,14 +61,14 @@ would have nothing to authenticate as, and granting the run role cluster
 access to fix that would reverse a deliberate security decision for the sake
 of one object.
 
-### Applying it
+### Applying it by hand (pre-M7 / fresh-cluster bootstrap only)
 
 ```
-kubectl apply -f cluster/storageclass-gp3.yaml
+kubectl apply -f cluster/storageclass/gp3.yaml
 ```
 
-Milestone 7 should fold this into an Argo CD Application so it stops being a
-manual step.
+Folded into an Argo CD Application (`argocd/applications/30-storageclass.yaml`)
+as of Milestone 7 — this manual step is no longer the normal path.
 
 ### Note for a customer-managed KMS key
 

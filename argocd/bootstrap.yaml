@@ -1,0 +1,58 @@
+# The ONE kubectl apply (see README.md's runbook). Everything after this is
+# git: the "root" Application below watches argocd/ and creates every other
+# Application/AppProject from commits, including projects/platform.yaml and
+# projects/sports-store.yaml.
+#
+# Project first, root Application second, in the same file — the root
+# Application must reference a project that already exists by the time Argo
+# CD processes it.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: bootstrap
+  namespace: argocd
+spec:
+  description: Owns only the root Application. Nothing application-shaped lives here.
+  sourceRepos:
+    - https://github.com/pyly-devops/sports-store-deployments
+  destinations:
+    - namespace: argocd
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: argoproj.io
+      kind: AppProject
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  # No finalizer here on purpose: the exclusion below is what actually keeps
+  # this object un-deletable via git, not a finalizer. A finalizer would just
+  # make kubectl delete hang, not prevent a future commit from removing it.
+spec:
+  project: bootstrap
+  source:
+    repoURL: https://github.com/pyly-devops/sports-store-deployments
+    targetRevision: main
+    path: argocd
+    directory:
+      recurse: true
+      # Deliberately excludes:
+      #   - bootstrap.yaml itself, so no git commit can ever delete the root
+      #     Application — only the one manual `kubectl apply` created it, and
+      #     only a manual `kubectl delete` removes it.
+      #   - install/values.yaml, which recurse: true would otherwise try to
+      #     parse as a Kubernetes manifest (it is Helm values, not a
+      #     manifest) and put the root app into permanent ComparisonError.
+      exclude: "{bootstrap.yaml,install/values.yaml}"
+      include: "{projects/*.yaml,applications/*.yaml}"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
