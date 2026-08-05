@@ -15,7 +15,6 @@
 ================================================================================
 */}}
 {{- if .Values.ingress.enabled }}
-{{- $gateway := index .Values.services "gateway" }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -32,8 +31,7 @@ spec:
   tls: {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
-    - host: {{ .Values.ingress.host }}
-      http:
+    - http:
         paths:
           - path: /
             pathType: Prefix
@@ -44,4 +42,22 @@ spec:
                   # By name, not number, so the gateway's port can change in
                   # values.yaml without breaking routing here.
                   name: http
+      {{- /*
+        `host` is OMITTED ENTIRELY when unset, not rendered empty. A rule with
+        no host matches ANY Host header, which is exactly what an ALB reached
+        by its own *.elb.amazonaws.com name needs — Milestone 5 has no domain,
+        no Route 53 and no certificate. Naming a host you do not own gets you
+        a 404 from the load balancer and a long afternoon.
+
+        It is placed AFTER `http` on purpose: leading with a conditional would
+        leave a bare `-` on the list item when the host is unset, which is
+        valid YAML but reads like a mistake. Both renders were checked.
+
+        Adding a real hostname later is a values change and nothing else: set
+        ingress.host, add the certificate-arn and ssl-redirect annotations,
+        and this template does not move.
+      */}}
+      {{- with .Values.ingress.host }}
+      host: {{ . | quote }}
+      {{- end }}
 {{- end }}
