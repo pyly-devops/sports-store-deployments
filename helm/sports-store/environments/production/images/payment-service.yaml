@@ -16,4 +16,4 @@
 services:
   payment-service:
     image:
-      tag: 0.1.0-019a21c
+      tag: 0.1.0-2008a3f
