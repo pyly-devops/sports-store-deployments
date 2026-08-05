@@ -1,0 +1,44 @@
+# The application, and nothing else. One source repo, one destination
+# namespace, deny-all on cluster-scoped resources.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: sports-store
+  namespace: argocd
+spec:
+  description: The sports-store Helm release — application-scoped resources only
+
+  sourceRepos:
+    - https://github.com/pyly-devops/sports-store-deployments
+
+  destinations:
+    - namespace: sports-store
+      server: https://kubernetes.default.svc
+
+  # Empty list is deny-all, not "unset" — the app needs zero cluster-scoped
+  # resources, and leaving this out entirely would default-allow instead.
+  clusterResourceWhitelist: []
+
+  # Enumerated from the actual chart render (helm template --dry-run against
+  # the exact 7 -f flags used by the Application below), not guessed. The
+  # highest-value line is the one that ISN'T here: Secret. If secrets.create
+  # ever flips to true, that turns a committed plaintext credential into a
+  # loud sync failure instead of a quiet one in a live cluster.
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: apps
+      kind: Deployment
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: networking.k8s.io
+      kind: Ingress
+
+  orphanedResources:
+    warn: true

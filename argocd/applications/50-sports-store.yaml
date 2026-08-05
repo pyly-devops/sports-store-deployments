@@ -1,0 +1,62 @@
+# Wave 30: needs namespaces (0), ESO + its CRs (10/20), the storage class and
+# ALB controller (20) all Healthy first — the PVC names gp3 by
+# storageClassName and the Ingress needs the controller's IngressClass.
+#
+# releaseName is PINNED to "sports-store" — matches what M3/M5 installed by
+# hand, so app.kubernetes.io/instance doesn't change and Argo CD adopts the
+# existing release identity rather than creating a second one alongside it.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sports-store
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "30"
+spec:
+  project: sports-store
+  source:
+    repoURL: https://github.com/pyly-devops/sports-store-deployments
+    targetRevision: main
+    path: helm/sports-store
+    helm:
+      releaseName: sports-store
+      # Order matters: base values first, then each service's image tag file
+      # layered on top — mirrors the `helm upgrade -f ... -f ...` invocation
+      # documented in environments/production/values.yaml's header exactly.
+      # CI's bump-deployment job (see the 6 app repos' ci.yml) edits only its
+      # own file here with yq; merging that PR is the deploy.
+      valueFiles:
+        - environments/production/values.yaml
+        - environments/production/images/auth-service.yaml
+        - environments/production/images/catalog-service.yaml
+        - environments/production/images/cart-service.yaml
+        - environments/production/images/order-service.yaml
+        - environments/production/images/payment-service.yaml
+        - environments/production/images/gateway.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sports-store
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      # A render producing zero resources (someone deletes the chart
+      # directory, or all 7 -f flags fail to resolve) is never read as
+      # "delete everything".
+      allowEmpty: false
+    syncOptions:
+      # cluster/namespaces owns namespace creation one wave earlier — this
+      # Application must never try to create it itself.
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff: {duration: 15s, factor: 2, maxDuration: 5m}
+
+  # Deliberately empty on day one. Adding entries speculatively hides real
+  # drift. Run `argocd app diff sports-store` after the first sync and add
+  # only what actually appears — the two likely candidates are the PVC's
+  # spec.volumeName / pv.kubernetes.io/bind-completed and the Ingress's
+  # group.ingress.k8s.aws finalizer. If anything IS added,
+  # RespectIgnoreDifferences=true must go into syncOptions above too, or
+  # self-heal keeps re-pushing the field just ignored.
+  ignoreDifferences: []

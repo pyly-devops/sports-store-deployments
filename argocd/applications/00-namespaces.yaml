@@ -1,0 +1,27 @@
+# Wave 0: namespaces must exist before anything that creates objects inside
+# them. Directory-type Application over cluster/namespaces/ — never a Helm
+# chart, so there's no values file for recurse: true to misparse.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: namespaces
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: platform
+  source:
+    repoURL: https://github.com/pyly-devops/sports-store-deployments
+    targetRevision: main
+    path: cluster/namespaces
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    retry:
+      limit: 5
+      backoff: {duration: 15s, factor: 2, maxDuration: 5m}
