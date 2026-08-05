@@ -60,6 +60,23 @@ serviceDefaults:
     # deferred rather than claimed untested.
   service:
     type: ClusterIP
+  # Milestone 8. Per-service scrape settings; whether a ServiceMonitor is
+  # RENDERED AT ALL is the top-level `metrics.enabled` further down, because
+  # that depends on the cluster having the Prometheus Operator CRDs, which is
+  # an environment fact rather than a per-service one.
+  metrics:
+    enabled: true
+    path: /metrics
+    # The NAMED Service port to scrape. The five Python services serve
+    # /metrics from the same uvicorn as their API, so "http" is correct for
+    # them; the gateway overrides it, because its metrics come from a sidecar
+    # on a different port.
+    portName: http
+    # 30s, not the 15s that is often the default. Six services on a two-node
+    # cluster with 7 days of retention — halving the interval doubles the
+    # series volume and the disk to hold it, to resolve spikes shorter than
+    # anything the alerts in observability/ actually fire on.
+    interval: 30s
   probes:
     readiness: {initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 3}
     # Slower and more forgiving than readiness on purpose — a liveness probe
@@ -177,6 +194,38 @@ services:
       # the Ingress. environments/local overrides this to NodePort, because
       # minikube has no cloud load balancer.
       type: ClusterIP
+    # nginx cannot serve Prometheus metrics itself, so unlike the five Python
+    # services the gateway's /metrics comes from a sidecar that translates
+    # nginx's own `stub_status` page into the exposition format.
+    #
+    # HONEST SCOPE: stub_status gives connections accepted/handled/active and
+    # a total request counter. Open-source nginx exposes no per-route status
+    # codes and no latency at all — that is an NGINX Plus feature. So this
+    # endpoint proves the gateway is up and taking traffic, and nothing more.
+    # Gateway error rate and latency come from its JSON access logs through
+    # Loki instead, which is why those logs are load-bearing rather than
+    # decoration.
+    metrics:
+      enabled: true
+      path: /metrics
+      # NOT "http". The gateway serves traffic on 80 and metrics on 9113.
+      portName: metrics
+      interval: 30s
+      exporter:
+        enabled: true
+        # Pinned like everything else. `latest` exists on this repository and
+        # is not used here.
+        image: nginx/nginx-prometheus-exporter:1.5.1
+        port: 9113
+        # 127.0.0.1, and that is the whole security model for this endpoint.
+        # nginx.conf binds the stub_status listener to loopback, so it is
+        # reachable from this sidecar — which shares the pod's network
+        # namespace — and from nowhere else. Not another pod, not the
+        # Service, not the ALB.
+        scrapeUri: http://127.0.0.1:8081/stub_status
+        resources:
+          requests: {cpu: 10m, memory: 16Mi}
+          limits: {cpu: 50m, memory: 32Mi}
     probes:
       readiness: {initialDelaySeconds: 3, periodSeconds: 5, failureThreshold: 3}
       liveness: {initialDelaySeconds: 10, periodSeconds: 20, failureThreshold: 3}
@@ -225,6 +274,31 @@ ingress:
   host: sports-store.local
   annotations: {}
   tls: []
+
+# ---------------------------------------------------------------------------
+# metrics — the master switch for ServiceMonitor rendering (Milestone 8).
+#
+# DEFAULT FALSE, and that is not timidity. `ServiceMonitor` is a CRD owned by
+# the Prometheus Operator. Rendering one into a cluster that does not have
+# kube-prometheus-stack installed fails the ENTIRE release with
+#
+#   no matches for kind "ServiceMonitor" in version "monitoring.coreos.com/v1"
+#
+# so a chart that defaults this on would break every plain `helm install` on a
+# bare cluster — including the minikube path in environments/local, which has
+# no operator and does not want one.
+#
+# environments/production/values.yaml sets it true, because that cluster has
+# the operator. This is also the backstop for Argo CD sync ordering: if the
+# monitoring Application has not synced yet, the CRDs do not exist, and the
+# sync-wave annotation is the primary defence but this is the one that does
+# not depend on how the Applications are structured.
+#
+# The per-service `serviceDefaults.metrics` block above controls HOW each
+# service is scraped once this is on.
+# ---------------------------------------------------------------------------
+metrics:
+  enabled: false
 
 # ---------------------------------------------------------------------------
 # secrets
