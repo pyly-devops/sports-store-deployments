@@ -8,10 +8,30 @@ REACHING THE APP
   The gateway is the only externally reachable component. The five backends are
   ClusterIP by design — if you can reach one directly, something is wrong.
 {{ if .Values.ingress.enabled }}
+{{- if eq .Values.ingress.className "alb" }}
+  Ingress:   class alb — the AWS Load Balancer Controller provisions an ALB.
+             Its hostname does not exist until the controller has finished, so
+             it cannot be printed here. Fetch it (allow a minute or two):
+
+               kubectl get ingress gateway -n {{ .Release.Namespace }} \
+                 -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+{{- if .Values.ingress.host }}
+             Rule is host-scoped to {{ .Values.ingress.host }}, so a request to
+             the ALB's own name will NOT match. Point DNS at it first.
+{{- else }}
+             No host is set, so the rule matches any Host header and the ALB's
+             own *.elb.amazonaws.com name serves the app directly.
+{{- end }}
+             Empty output usually means the controller is not installed or its
+             ServiceAccount cannot assume the IRSA role:
+               kubectl -n kube-system logs deploy/aws-load-balancer-controller
+{{- else }}
   Ingress:   http://{{ .Values.ingress.host }}   (class: {{ .Values.ingress.className }})
 {{- if eq .Values.ingress.className "nginx" }}
              needs `minikube addons enable ingress` and an /etc/hosts entry:
                echo "$(minikube ip)  {{ .Values.ingress.host }}" | sudo tee -a /etc/hosts
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if eq $gwType "NodePort" }}
@@ -41,8 +61,23 @@ SECRETS
 {{- end }}
 
 LIFECYCLE
+{{- $env := ternary "production" "local" (eq .Values.ingress.className "alb") }}
 
-  helm upgrade  {{ .Release.Name }} . -f environments/local/values.yaml
+  helm upgrade  {{ .Release.Name }} . -f environments/{{ $env }}/values.yaml
+{{- if eq $env "production" }}
+                # ...plus one -f per environments/production/images/<svc>.yaml,
+                # or the tags fall back to the ones in values.yaml
+{{- end }}
   helm rollback {{ .Release.Name }} <revision>
   helm uninstall {{ .Release.Name }}     # {{ .Values.mongodbData.name }} SURVIVES this
                                           # on purpose — reinstalling keeps the data
+{{- if eq $env "production" }}
+
+  BEFORE `terraform destroy`, delete the Ingress and wait for the ALB to go:
+
+    kubectl delete ingress gateway -n {{ .Release.Namespace }}
+
+  The ALB and its security groups are created by the controller, not by
+  Terraform, so a destroy that races them fails on DependencyViolation
+  deleting the VPC.
+{{- end }}
