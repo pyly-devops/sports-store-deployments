@@ -16,4 +16,4 @@
 services:
   catalog-service:
     image:
-      tag: 0.1.0-9126ff3
+      tag: 0.1.0-5cb70e5
