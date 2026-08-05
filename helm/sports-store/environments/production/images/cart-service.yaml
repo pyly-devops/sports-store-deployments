@@ -15,4 +15,4 @@
 services:
   cart-service:
     image:
-      tag: 0.1.0-c01139d
+      tag: 0.1.0-8fa412a
