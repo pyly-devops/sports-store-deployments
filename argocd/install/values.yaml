@@ -4,25 +4,26 @@
 # excludes this file from its directory.recurse walk. It is consumed exactly
 # once, by the `helm upgrade --install argocd` bootstrap command in README.md.
 #
-# T10 (M7 plan): a 2-node t3.small cluster has very little headroom, and this
-# chart defaults to 7 pods with resources: {} on three of them — invisible to
-# the scheduler, first to be OOM-killed. None of dex/notifications/
-# applicationSet are used by this project, so they're disabled outright
-# rather than just resourced, and every remaining pod gets explicit requests.
-# Budget: ~950Mi total. Re-measure with
-# `kubectl describe node | grep -A8 Allocatable` after bootstrap — bump the
-# node group to t3.medium (M8 needs it anyway) if short, rather than trust
-# this comment's arithmetic.
+# T10 (M7 plan): a t3.small cluster has very little headroom, and this chart
+# defaults to 7 pods with resources: {} on most of them — invisible to the
+# scheduler, first to be OOM-killed. dex and notifications are unused by this
+# project and disabled outright. applicationSet has NO enabled toggle in this
+# chart version — verified against `helm show values` before assuming
+# otherwise; every Application here is hand-written anyway, so it just gets a
+# resource budget instead of being removable. Every remaining pod gets
+# explicit requests. Re-measure with
+# `kubectl describe node | grep -A8 Allocatable` after bootstrap — the plan's
+# original 2-node assumption was short even before this chart; see
+# docs/status.md for the node-count fix this forced.
 
 dex:
   enabled: false # no SSO/OIDC login integration in this project
 
+# NOT notifications.controller.enabled — that key doesn't exist in this
+# chart. The real toggle is top-level, confirmed against `helm show values
+# argo/argo-cd --version 10.2.3`.
 notifications:
-  controller:
-    enabled: false # no Slack/webhook notifications configured
-
-applicationSet:
-  enabled: false # every Application here is hand-written, not templated from a generator
+  enabled: false # no Slack/webhook notifications configured
 
 controller:
   resources:
