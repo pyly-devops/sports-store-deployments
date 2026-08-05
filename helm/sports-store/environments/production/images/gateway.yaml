@@ -3,7 +3,8 @@
 # Milestone 7: this service's GitHub Actions workflow is the only thing that
 # writes here, and it does so with a YAML-aware tool, never a text replace:
 #
-#   yq -i '.services.gateway.image.tag = "'"$VERSION-$SHORT_SHA"'"' \
+#   SERVICE=gateway TAG=$VERSION-$SHORT_SHA \
+#     yq -i '.services[strenv(SERVICE)].image.tag = strenv(TAG)' \
 #     helm/sports-store/environments/production/images/gateway.yaml
 #
 # One file per service so six pipelines can commit concurrently without ever
