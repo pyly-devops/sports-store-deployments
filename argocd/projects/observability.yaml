@@ -1,0 +1,42 @@
+# kube-prometheus-stack, Loki, Alloy and the dashboard ConfigMap. A third
+# AppProject rather than widening "platform" — these Applications pull from
+# two upstream Helm repos nothing else in this repository needs, and
+# widening platform's sourceRepos would hand that access to the ALB
+# controller and ESO Applications too.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: observability
+  namespace: argocd
+spec:
+  description: kube-prometheus-stack, Loki, Alloy and the dashboard ConfigMap — observability namespace only
+
+  sourceRepos:
+    - https://github.com/pyly-devops/sports-store-deployments
+    - https://prometheus-community.github.io/helm-charts
+    - https://grafana.github.io/helm-charts
+
+  destinations:
+    - namespace: observability
+      server: https://kubernetes.default.svc
+
+  # Enumerated from the actual render (helm template all four sources with
+  # the pinned versions and our values files), not guessed — same discipline
+  # as projects/sports-store.yaml. kube-prometheus-stack owns almost all of
+  # this: its CRDs, the Prometheus Operator's ClusterRole/Binding and
+  # admission webhook, and the two aggregated view/edit ClusterRoles it
+  # wires into the built-in kube-system RBAC.
+  clusterResourceWhitelist:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+
+  orphanedResources:
+    warn: true

@@ -1,0 +1,161 @@
+# Grafana Alloy — log collection (Milestone 8).
+#
+# Chart 1.11.0 (Alloy v1.18.0), pinned in argocd/applications/70-alloy.yaml.
+#
+# Alloy rather than Promtail because the brief names it, and because Promtail
+# is in maintenance mode with Alloy as its designated successor. The
+# configuration language is different (Alloy's own component syntax rather
+# than Promtail's YAML), which is most of why this file looks unusual.
+
+controller:
+  # Milestone 8 verification pass (2026-08-06): this was `daemonset`, on a
+  # comment claiming it was "the only shape that captures a pod's last words
+  # before it restarted" because it "reads container logs off that node's
+  # filesystem". That justification describes `loki.source.file`, not the
+  # component actually used below. `loki.source.kubernetes` tails through the
+  # KUBERNETES API, not the node filesystem — so with cluster-wide
+  # discovery.kubernetes and no node filter, a DaemonSet here means every
+  # replica discovers and tails every pod in the cluster: 3-4x duplicate log
+  # lines, 3-4x ingest against the same 5Gi Loki volume, and nothing anywhere
+  # reports it as an error.
+  #
+  # Fix: one replica. A single collector cannot double-tail anything.
+  #
+  # THE TRADE, STATED RATHER THAN DISCOVERED: one pod makes log collection a
+  # single point of failure. An eviction of this one pod stops ALL logging,
+  # silently, until it reschedules — where a DaemonSet degrades gracefully,
+  # losing only the evicted node's logs. Correct at this scale (a 4-node demo
+  # cluster); the exit at real scale is DaemonSet + `loki.source.file` over
+  # `/var/log/pods` with node-scoped discovery (each replica only discovers
+  # pods on its own node, so replicas never overlap).
+  type: deployment
+  replicas: 1
+
+alloy:
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 200m, memory: 256Mi}
+
+  # The Alloy pipeline: discover pods -> decide labels -> tail -> ship.
+  configMap:
+    content: |-
+      // ---------------------------------------------------------------------
+      // 1. DISCOVER. Ask the API server for every pod, cluster-wide.
+      // ---------------------------------------------------------------------
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      // ---------------------------------------------------------------------
+      // 2. DECIDE THE LABELS. This block is the whole design.
+      //
+      // Loki INDEXES labels, and its failure mode under high label
+      // cardinality is not a slow query — it is an out-of-memory ingester and
+      // a stream count that grows without bound. The rule is: a label may
+      // only take a small, bounded set of values.
+      //
+      // So the allow-list below is short and deliberate, and two things are
+      // conspicuously absent:
+      //
+      //   pod_template_hash — changes on every single deploy, so every
+      //   rollout would orphan the old streams and create a new set forever.
+      //
+      //   anything from log CONTENT. The JSON fields the services and the
+      //   gateway emit (level, path, status, duration_seconds) are queried
+      //   with LogQL's `| json` parser at READ time. That is what LogQL is
+      //   for, and it keeps `status` — which is unbounded in principle — out
+      //   of the index entirely.
+      //
+      // `pod` is included and is the highest-cardinality label kept: it turns
+      // over on every restart. It earns its place because "show me that one
+      // pod's logs" is the single most common query during an incident, and
+      // the pod count here is bounded by a small cluster.
+      // ---------------------------------------------------------------------
+      discovery.relabel "pods" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        // The app label the sports-store chart puts on every one of ITS pods
+        // (_helpers.tpl "sports-store.selectorLabels"). Stable across
+        // deploys, which is what makes it the right primary grouping key.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app"]
+          target_label  = "app"
+        }
+        // Milestone 8 correction: Bitnami's MongoDB pod does not carry the
+        // plain `app` label the sports-store chart's own six pods do — it
+        // carries the recommended `app.kubernetes.io/name` label instead
+        // (`__meta_kubernetes_pod_label_app_kubernetes_io_name` once
+        // discovery.kubernetes exposes it). Without this rule MongoDB's logs
+        // reach Loki with an empty `app` label instead of failing loudly.
+        //
+        // This ONLY fires when `app` is still empty after the rule above: the
+        // regex `^;(.+)$` matches the two source labels joined by `;` only
+        // when the first (the `app` set so far) is empty and the second (the
+        // Kubernetes recommended-label fallback) is not — so a pod that
+        // already has `app` set is never touched by this rule.
+        rule {
+          source_labels = ["app", "__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          separator     = ";"
+          regex         = ";(.+)"
+          target_label  = "app"
+          replacement   = "$1"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          target_label  = "node"
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // 3. TAIL. Reads through the Kubernetes API server, not the node
+      // filesystem — see the `controller.type` comment above for why that
+      // fact is what makes `replicas: 1` correct rather than optional.
+      // ---------------------------------------------------------------------
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.process.drop_noise.receiver]
+      }
+
+      // ---------------------------------------------------------------------
+      // 4. DROP WHAT IS NOT WORTH STORING.
+      //
+      // The gateway logs one line per request, and the readiness and liveness
+      // probes hit it every few seconds on every pod. Those lines are pure
+      // volume: they say nothing that the `up` metric does not, and on a
+      // 5Gi Loki they would crowd out real traffic.
+      //
+      // The metric-side equivalent of this is `excluded_handlers` in each
+      // service's observability.py — same reasoning, other signal.
+      // ---------------------------------------------------------------------
+      loki.process "drop_noise" {
+        forward_to = [loki.write.default.receiver]
+
+        stage.drop {
+          expression = ".*\"path\":\"/health\".*"
+        }
+        stage.drop {
+          expression = ".*kube-probe.*"
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // 5. SHIP. The in-cluster Loki Service — SingleBinary mode, so this is
+      // the single binary's own address and not a gateway in front of it.
+      // ---------------------------------------------------------------------
+      loki.write "default" {
+        endpoint {
+          url = "http://loki.observability.svc.cluster.local:3100/loki/api/v1/push"
+        }
+      }

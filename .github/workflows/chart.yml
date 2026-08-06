@@ -1,11 +1,14 @@
-# Chart CI (Milestone 7). Deferred here rather than into Milestone 6 because
-# Argo CD turns a bad chart commit into a live cluster change — this repo
-# gets its own gate for exactly the reason the app repos already have one.
+# Chart CI (Milestone 7, extended in Milestone 8). Deferred here rather than
+# into Milestone 6 because Argo CD turns a bad chart commit into a live
+# cluster change — this repo gets its own gate for exactly the reason the app
+# repos already have one.
 #
-# Two independent jobs: `chart` renders and guards the Helm chart itself;
-# `argocd-manifests` schema-validates the plain-YAML argocd/ and cluster/
-# trees. Deliberately not `helm template`-ing argocd/ — it is plain
-# Kubernetes YAML, not a chart, and rendering it would be a category error.
+# Three independent jobs: `chart` renders and guards the application Helm
+# chart itself; `argocd-manifests` schema-validates the plain-YAML argocd/
+# and cluster/ trees; `observability` (Milestone 8) renders and guards the
+# three upstream charts under observability/. Deliberately not
+# `helm template`-ing argocd/ in the second job — it is plain Kubernetes
+# YAML, not a chart, and rendering it would be a category error.
 
 name: chart
 
@@ -225,3 +228,251 @@ jobs:
         uses: reviewdog/action-actionlint@v1
         with:
           fail_level: error
+
+  # Milestone 8. Renders the three upstream observability charts (plus the
+  # in-repo dashboard chart) with our values files, and the argo-cd chart
+  # with argocd/install/values.yaml — the latter lives here rather than in
+  # `argocd-manifests` because it needs `helm template`, which that job's own
+  # header comment deliberately excludes for the plain-YAML tree.
+  observability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Add upstream chart repos
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+
+      - name: Install yq
+        # mikefarah/yq's own Action wraps yq as a single --cmd string, which
+        # is a worse fit here than the six app repos' ci.yml jobs that use
+        # it for a single edit — several independent checks below each need
+        # a plain shell invocation.
+        run: |
+          curl -sSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
+            -o /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+
+      - name: Install promtool
+        run: |
+          curl -sSL https://github.com/prometheus/prometheus/releases/download/v3.13.2/prometheus-3.13.2.linux-amd64.tar.gz \
+            | tar xz --strip-components=1 prometheus-3.13.2.linux-amd64/promtool
+          sudo mv promtool /usr/local/bin/
+
+      - name: Render the three observability charts + the dashboard chart
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/observability-render
+          helm template monitoring prometheus-community/kube-prometheus-stack --version 88.1.5 \
+            -n observability -f observability/kube-prometheus-stack/values.yaml --include-crds \
+            > /tmp/observability-render/monitoring.yaml
+          helm template loki grafana/loki --version 7.2.0 \
+            -n observability -f observability/loki/values.yaml \
+            > /tmp/observability-render/loki.yaml
+          helm template alloy grafana/alloy --version 1.11.0 \
+            -n observability -f observability/alloy/values.yaml \
+            > /tmp/observability-render/alloy.yaml
+          helm template extras observability/extras -n observability \
+            > /tmp/observability-render/extras.yaml
+
+      - name: helm lint the three observability charts
+        run: |
+          set -euo pipefail
+          # `helm lint` only takes a local PATH — no repo/chart-ref shorthand
+          # and no --version flag, unlike `helm template`. Pull and untar
+          # each pinned version first.
+          mkdir -p /tmp/observability-charts
+          helm pull prometheus-community/kube-prometheus-stack --version 88.1.5 --untar --untardir /tmp/observability-charts
+          helm pull grafana/loki --version 7.2.0 --untar --untardir /tmp/observability-charts
+          helm pull grafana/alloy --version 1.11.0 --untar --untardir /tmp/observability-charts
+          helm lint /tmp/observability-charts/kube-prometheus-stack -f observability/kube-prometheus-stack/values.yaml
+          helm lint /tmp/observability-charts/loki -f observability/loki/values.yaml
+          helm lint /tmp/observability-charts/alloy -f observability/alloy/values.yaml
+
+      - name: Guard — Prometheus selects every ServiceMonitor, not only its own release's
+        run: |
+          set -euo pipefail
+          # The failure this catches has NO error message anywhere — a
+          # ServiceMonitor created, listed by kubectl, and silently ignored.
+          # See observability/README.md's own "Verifying without a cluster".
+          #
+          # yq against the actual Prometheus CR, not grep: with
+          # --include-crds in the render above, the CRDs' own OpenAPI schema
+          # descriptions also contain the literal string
+          # "serviceMonitorSelector:", so a text match finds the wrong
+          # occurrence as often as the right one.
+          selector=$(yq eval-all 'select(.kind == "Prometheus") | .spec.serviceMonitorSelector' /tmp/observability-render/monitoring.yaml)
+          [ "$selector" = "{}" ] || {
+            echo "::error::Prometheus spec.serviceMonitorSelector is '$selector', not {} — ServiceMonitors from the sports-store release would be silently ignored" >&2
+            exit 1
+          }
+
+      - name: Guard — promtool validates the sports-store alert rules
+        run: |
+          set -euo pipefail
+          yq eval-all 'select(.kind == "PrometheusRule" and .metadata.name == "monitoring-kube-prometheus-sports-store") | {"groups": .spec.groups}' \
+            /tmp/observability-render/monitoring.yaml > /tmp/observability-render/sports-store-rules.yaml
+          promtool check rules /tmp/observability-render/sports-store-rules.yaml
+
+      - name: Guard — the six sports-store alert names each appear exactly once
+        run: |
+          set -euo pipefail
+          # §3.1's MongoDB alert bug was a VALID expression against an object
+          # that does not exist — promtool's syntax check above cannot catch
+          # that class of bug, only a name/count assertion like this one can.
+          for alert in SportsStoreServiceDown SportsStoreReplicasUnavailable \
+                       SportsStorePodCrashLooping SportsStoreMongoDBDown \
+                       SportsStoreHighErrorRate SportsStoreHighLatency; do
+            count=$(yq eval-all '.spec.groups[].rules[]?.alert' /tmp/observability-render/monitoring.yaml | grep -c "^${alert}$" || true)
+            if [ "$count" -ne 1 ]; then
+              echo "::error::alert ${alert} appears ${count} times across the render, expected exactly 1" >&2
+              exit 1
+            fi
+          done
+
+      - name: Guard — MongoDB alert targets the Deployment Bitnami actually renders
+        run: |
+          # §3.1: architecture: standalone renders a Deployment, not a
+          # StatefulSet. A regression back to kube_statefulset_status_* would
+          # be syntactically valid and silently never fire — nothing else in
+          # this job would catch it.
+          grep -q 'kube_deployment_status_replicas_available{namespace="sports-store", deployment="mongodb"}' \
+            /tmp/observability-render/monitoring.yaml || {
+            echo "::error::SportsStoreMongoDBDown no longer queries the Deployment MongoDB actually renders as" >&2
+            exit 1
+          }
+
+      - name: Guard — the three unreachable EKS control-plane monitors are absent, and only they are
+        run: |
+          set -euo pipefail
+          # T9: disabling the monitor but not the paired defaultRules.rules
+          # entry turns "fires constantly" into "fires permanently" — half
+          # the fix is worse than none. kubeApiServer/kubelet ARE reachable
+          # on EKS and must stay; kube-proxy/coredns are unrelated to this
+          # pair and must also stay untouched.
+          #
+          # yq filtered on kind == ServiceMonitor specifically, not a text
+          # grep on the name: this chart also ships a same-named Grafana
+          # dashboard ConfigMap for several of these components (e.g.
+          # monitoring-kube-prometheus-apiserver exists as BOTH a
+          # ServiceMonitor and a dashboard ConfigMap), so a plain name grep
+          # would still pass even if the ServiceMonitor specifically were
+          # the thing missing.
+          all_service_monitors=$(yq eval-all 'select(.kind == "ServiceMonitor") | .metadata.name' /tmp/observability-render/monitoring.yaml)
+          for sm in monitoring-kube-prometheus-kube-etcd monitoring-kube-prometheus-kube-scheduler monitoring-kube-prometheus-kube-controller-manager; do
+            if echo "$all_service_monitors" | grep -qx "$sm"; then
+              echo "::error::${sm} ServiceMonitor is present — its target is unreachable on EKS and its default alert rule would fire permanently" >&2
+              exit 1
+            fi
+          done
+          for sm in monitoring-kube-prometheus-apiserver monitoring-kube-prometheus-kubelet; do
+            echo "$all_service_monitors" | grep -qx "$sm" || {
+              echo "::error::${sm} ServiceMonitor is missing — this target IS reachable on EKS and should stay enabled" >&2
+              exit 1
+            }
+          done
+
+      - name: Guard — Alloy is a Deployment, not a DaemonSet
+        run: |
+          # §3.2: loki.source.kubernetes tails through the API server, not
+          # the node filesystem — a DaemonSet here means every replica tails
+          # every pod. 3-4x duplicate logs, 3-4x ingest, no error anywhere.
+          grep -q '^kind: Deployment$' /tmp/observability-render/alloy.yaml || {
+            echo "::error::Alloy no longer renders as a Deployment — check controller.type in observability/alloy/values.yaml" >&2
+            exit 1
+          }
+          if grep -q '^kind: DaemonSet$' /tmp/observability-render/alloy.yaml; then
+            echo "::error::Alloy rendered a DaemonSet — see observability/alloy/values.yaml's controller.type comment (§3.2)" >&2
+            exit 1
+          fi
+
+      - name: Guard — no component in the observability namespace is BestEffort
+        run: |
+          set -euo pipefail
+          # §3.6 and the two sidecar gaps found alongside it (grafana's
+          # k8s-sidecar containers, the prometheus-config-reloader): a
+          # container with no memory request is invisible to the scheduler's
+          # accounting and first in line to be OOM-killed. All four render
+          # files should carry a request on every container by now.
+          fail=0
+          for f in /tmp/observability-render/monitoring.yaml /tmp/observability-render/loki.yaml /tmp/observability-render/alloy.yaml; do
+            missing=$(yq eval-all 'select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet") | .metadata.name as $n | .spec.template.spec.containers[] | select(.resources.requests.memory == null) | $n + "/" + .name' "$f")
+            if [ -n "$missing" ]; then
+              echo "::error::containers with no memory request in $f:"
+              echo "$missing"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Dashboard is valid JSON
+        run: |
+          # Edited by export-and-paste from the Grafana UI, which is exactly
+          # how a truncated file gets committed.
+          for f in observability/extras/dashboards/*.json; do
+            python3 -m json.tool "$f" > /dev/null || {
+              echo "::error file=$f::not valid JSON" >&2
+              exit 1
+            }
+          done
+
+      - name: Guard — no unknown top-level values keys (argocd, kube-prometheus-stack, loki, alloy)
+        run: |
+          set -euo pipefail
+          # §3.10: `applicationSetController` is not a key in the argo-cd
+          # chart. Helm does not error on an unknown top-level values key —
+          # it silently drops the whole block — so a typo here is
+          # indistinguishable from a default. This already shipped once; it
+          # is the one check in this job that would have caught a bug
+          # already in main rather than one introduced by this milestone.
+          fail=0
+          check() {
+            file="$1"; chart="$2"; version="$3"
+            ours=$(yq eval 'keys | .[]' "$file" | sort)
+            real=$(helm show values "$chart" --version "$version" | yq eval 'keys | .[]' - | sort)
+            extra=$(comm -23 <(echo "$ours") <(echo "$real"))
+            if [ -n "$extra" ]; then
+              echo "::error file=${file}::top-level key(s) not recognised by ${chart} ${version}: $(echo "$extra" | tr '\n' ' ')" >&2
+              fail=1
+            fi
+          }
+          check argocd/install/values.yaml argo/argo-cd 10.2.3
+          check observability/kube-prometheus-stack/values.yaml prometheus-community/kube-prometheus-stack 88.1.5
+          check observability/loki/values.yaml grafana/loki 7.2.0
+          check observability/alloy/values.yaml grafana/alloy 1.11.0
+          exit $fail
+
+      - name: Guard — the ApplicationSet controller's resources are actually rendered
+        run: |
+          set -euo pipefail
+          # The specific regression §3.10 fixes: a correctly-spelled key
+          # that silently stopped applying. Renders the real chart and reads
+          # the real container spec rather than re-checking the values file
+          # for its own key name, which would only prove the file is
+          # spelled correctly, not that Helm accepted it.
+          helm template argocd argo/argo-cd --version 10.2.3 \
+            -n argocd -f argocd/install/values.yaml \
+            > /tmp/observability-render/argocd.yaml
+          replicas=$(yq eval-all 'select(.kind == "Deployment" and (.metadata.name | test("applicationset"))) | .spec.replicas' /tmp/observability-render/argocd.yaml)
+          requests=$(yq eval-all 'select(.kind == "Deployment" and (.metadata.name | test("applicationset"))) | .spec.template.spec.containers[0].resources.requests.memory' /tmp/observability-render/argocd.yaml)
+          [ "$replicas" = "0" ] || { echo "::error::argocd-applicationset-controller replicas is '$replicas', expected 0" >&2; exit 1; }
+          [ "$requests" = "128Mi" ] || { echo "::error::argocd-applicationset-controller has no memory request rendered (got '$requests') — the applicationSet key may have regressed to applicationSetController" >&2; exit 1; }
+
+      - name: Guard — dashboard JSON survives the ConfigMap round-trip
+        run: |
+          set -euo pipefail
+          # Chart.yaml's own stated risk: .Files.Get + indent is a second
+          # place a truncated file could go unnoticed if the source file
+          # were ever valid JSON but the ConfigMap render were not.
+          yq eval 'select(.kind == "ConfigMap") | .data["sports-store-overview.json"]' /tmp/observability-render/extras.yaml \
+            | python3 -m json.tool > /dev/null || {
+            echo "::error::dashboard ConfigMap content does not parse as JSON after the Helm round-trip" >&2
+            exit 1
+          }

@@ -26,6 +26,12 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: sports-store
       server: https://kubernetes.default.svc
+    # Milestone 8: the wave-20 cluster-secrets Application (this project) is
+    # what creates the Grafana admin ExternalSecret in this namespace — the
+    # observability AppProject only owns the monitoring stack itself, not the
+    # ESO objects that feed it a credential.
+    - namespace: observability
+      server: https://kubernetes.default.svc
 
   # Only what the platform Applications actually render. CRD and
   # ClusterRole/ClusterRoleBinding are here because ESO and the ALB

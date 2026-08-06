@@ -1,0 +1,24 @@
+apiVersion: v2
+name: sports-store-observability-extras
+description: The one Grafana dashboard the brief asks for, as a sidecar-discovered ConfigMap
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+# WHY A CHART FOR ONE CONFIGMAP.
+#
+# Grafana's sidecar turns any ConfigMap labelled `grafana_dashboard: "1"` into
+# a dashboard, so the object itself is trivial. The chart exists so that the
+# dashboard stays a REAL .json FILE, loaded with `.Files.Get`.
+#
+# The alternative is embedding the JSON in a ConfigMap manifest as a YAML
+# block scalar. That works, and it makes the dashboard a ~400-line string
+# that no tool understands: it cannot be validated as JSON, it diffs as
+# reindented text in a PR, and it cannot be round-tripped through Grafana's
+# own export.
+#
+# As a file it can be edited in the Grafana UI, exported, and written straight
+# back over dashboards/sports-store-overview.json.
+#
+# This is the same reasoning the application chart already uses for
+# init-mongo.js over Bitnami's `initdbScripts` value.

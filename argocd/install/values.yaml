@@ -46,7 +46,29 @@ repoServer:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {memory: 512Mi}
 
-applicationSetController:
+# Milestone 8 (verification pass, 2026-08-06): this key was
+# `applicationSetController`, which is not a key this chart recognises — Helm
+# silently drops unknown top-level values keys instead of erroring, so the
+# resources block below never reached the pod. Live confirmation before the
+# fix: `kubectl get deploy -n argocd argocd-applicationset-controller -o
+# jsonpath='{.spec.template.spec.containers[*].resources}'` returned `{}`.
+# The chart's real key is `applicationSet` (confirmed against `helm show
+# values argo/argo-cd --version 10.2.3`).
+#
+# replicas: 0 rides along in the same edit — applicationSet has no `enabled`
+# toggle in this chart version, so scaling to zero is the only disable
+# available, and it is safe because every Application in this project is
+# hand-written; nothing depends on an ApplicationSet controller running.
+# Two things worth knowing if this is ever reverted:
+#   - it is a DISGUISED disable: a future ApplicationSet CR would be accepted
+#     by the API server and then silently never reconciled — no controller,
+#     no error, no event.
+#   - `kubectl get deploy -n argocd` will show `0/0`, which reads as crashed
+#     rather than intentionally idle.
+# applicationSet.pdb.enabled defaults to false, so no PodDisruptionBudget is
+# left behind to block a node drain at zero replicas.
+applicationSet:
+  replicas: 0
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 256Mi}
