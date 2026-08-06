@@ -16,4 +16,4 @@
 services:
   gateway:
     image:
-      tag: 0.1.0-a93d805
+      tag: 0.1.0-cd663d6
