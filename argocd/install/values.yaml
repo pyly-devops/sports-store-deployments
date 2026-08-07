@@ -27,8 +27,23 @@ notifications:
 
 controller:
   resources:
+    # M8 verification pass (2026-08-07): the controller was OOMKilled on
+    # repeat (exit 137, 28+ restarts) reconciling the `monitoring`
+    # Application — kube-prometheus-stack alone renders ~90 resources plus
+    # 8 CRDs, well past what 512Mi covers. Every sync of that app looked
+    # "stuck" (operationState.phase stayed Running for 20+ minutes with an
+    # empty syncResult) because the controller kept dying mid-reconcile and
+    # losing its progress on restart, not because of any resource-level
+    # sync error.
+    #
+    # Limit only, not request: the node group already sits at 89-96% memory
+    # REQUESTS (see observability/kube-prometheus-stack/values.yaml's own
+    # note on the same constraint), and the controller is already
+    # scheduled — raising the ceiling it may burst to doesn't claim any
+    # more of that already-scarce requested capacity. Same reasoning as the
+    # Grafana sidecar fix in the same pass.
     requests: {cpu: 100m, memory: 256Mi}
-    limits: {memory: 512Mi}
+    limits: {memory: 1024Mi}
 
 server:
   resources:
