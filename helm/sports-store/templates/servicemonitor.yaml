@@ -9,8 +9,8 @@
   with no second list to forget to update.
 
   --------------------------------------------------------------------------
-  TWO THINGS MAKE THIS SILENTLY DO NOTHING. Both are handled, neither is
-  obvious, and both fail with no error message at all.
+  THREE THINGS MAKE THIS SILENTLY DO NOTHING. All three are handled, none
+  is obvious, and all three fail with no error message at all.
   --------------------------------------------------------------------------
 
   1. THE CRD HAS TO EXIST FIRST.
@@ -45,6 +45,33 @@
      monitoring stack's release name into the application chart, pointing the
      dependency the wrong way round: the app should not know what the
      observability stack is called.
+
+  3. THE SELECTOR HAS TO MATCH THE SERVICE'S metadata.labels, NOT ITS
+     spec.selector.
+
+     M8 verification pass (2026-08-07): this was sports-store.selectorLabels
+     (`app: <name>`), on the claim (in the comment that used to sit here)
+     that "services.yaml labels each Service with the full
+     label set, and this matches the one stable key in it." That claim was
+     wrong, and the effect was total: EVERY sports-store target silently
+     dropped since deployment, `up{namespace="sports-store"}` returning no
+     series at all, `SportsStoreServiceDown` structurally unable to ever
+     fire (not "== 0", just absent).
+
+     sports-store.selectorLabels (`app: <name>`) is real, but it is only
+     ever written into spec.selector — the field a Service uses to find
+     PODS. A Service's own metadata.labels, which is what a ServiceMonitor's
+     spec.selector.matchLabels is matched against, gets
+     sports-store.labels instead (services.yaml), and that set carries
+     app.kubernetes.io/name, never a bare `app` key. Confirmed against the
+     live scrape config (`/api/v1/status/config`), not assumed: the
+     generated relabel_configs `keep` rule read
+     `__meta_kubernetes_service_label_app`, and no sports-store Service
+     ever has that label at all.
+
+     Matching app.kubernetes.io/name instead selects the one thing this
+     was always meant to select, using a key sports-store.labels actually
+     writes onto the Service.
 ================================================================================
 */}}
 {{- if .Values.metrics.enabled }}
@@ -60,9 +87,14 @@ metadata:
 spec:
   selector:
     # Selects the SERVICE, not the pods — that is the difference between a
-    # ServiceMonitor and a PodMonitor. services.yaml labels each Service with
-    # the full label set, and this matches the one stable key in it.
-    matchLabels: {{- include "sports-store.selectorLabels" (dict "name" $name) | nindent 6 }}
+    # ServiceMonitor and a PodMonitor. app.kubernetes.io/name is the key
+    # services.yaml's $labels (sports-store.labels) actually puts on the
+    # Service's metadata.labels — NOT sports-store.selectorLabels'
+    # `app: <name>`, which only ever lands in spec.selector (see the
+    # doc-comment above this template for the live-confirmed failure mode
+    # of getting this wrong).
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
   namespaceSelector:
     matchNames:
       - {{ $.Release.Namespace }}
