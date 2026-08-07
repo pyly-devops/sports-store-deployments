@@ -16,4 +16,4 @@
 services:
   order-service:
     image:
-      tag: 0.1.0-73a0c0f
+      tag: 0.1.0-8cc6213
