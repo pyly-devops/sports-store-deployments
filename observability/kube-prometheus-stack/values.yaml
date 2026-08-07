@@ -255,8 +255,14 @@ grafana:
 
   # The sidecar that turns ConfigMaps labelled `grafana_dashboard: "1"` into
   # dashboards is ON by default and already searches all namespaces — the
-  # defaults are correct here, so they are not restated. observability/extras
-  # ships exactly one such ConfigMap.
+  # defaults are correct here, so they are not restated.
+  #
+  # "observability/extras ships exactly one such ConfigMap" (this comment,
+  # until the M8 verification pass below) was true for OUR dashboard but
+  # wrong about the sidecar's actual workload: kube-prometheus-stack's own
+  # chart defaults ship 26 built-in kubernetes-mixin dashboard ConfigMaps
+  # alongside it, so the sidecar watches 27, not 1 — confirmed live via
+  # `kubectl get configmap -A -l grafana_dashboard=1`.
   #
   # Its resources are NOT: rendering shows two k8s-sidecar containers
   # (grafana-sc-dashboard AND grafana-sc-datasources — the second is what
@@ -266,10 +272,19 @@ grafana:
   # shipping `resources: {}`. Same BestEffort pattern as §3.6, found the same
   # way — not called out there because it is one level deeper, inside the
   # grafana subchart rather than this chart's own top level.
+  #
+  # M8 verification pass (2026-08-07): grafana-sc-dashboard and
+  # grafana-sc-datasources were both OOMKilled on repeat (exit 137, 24
+  # restarts each) against the original 64Mi limit — sized for the 1
+  # ConfigMap this comment assumed, not the 27 actually watched. Limit
+  # only, not request: the node group is already at 89-96% memory
+  # REQUESTS (see prometheus.prometheusSpec.resources above), and the
+  # container is already scheduled — raising the ceiling it may burst to
+  # doesn't cost it any more of that already-scarce requested capacity.
   sidecar:
     resources:
       requests: {cpu: 10m, memory: 32Mi}
-      limits: {cpu: 50m, memory: 64Mi}
+      limits: {cpu: 50m, memory: 128Mi}
 
 # ---------------------------------------------------------------------------
 # Alertmanager
