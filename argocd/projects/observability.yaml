@@ -19,6 +19,21 @@ spec:
   destinations:
     - namespace: observability
       server: https://kubernetes.default.svc
+    # Found live, not by rendering: kube-prometheus-stack's kubeProxy and
+    # coredns components (both left at their chart default of enabled —
+    # unlike kubeEtcd/kubeScheduler/kubeControllerManager, §3.9, both have
+    # real pods on EKS) each ship a synthetic headless Service in
+    # kube-system, alongside the actual kube-proxy DaemonSet / coredns
+    # Deployment, so their ServiceMonitors have something to select. `helm
+    # template --include-crds` renders these correctly, but a plain string
+    # scan for "namespace: observability" across the render would have
+    # missed them — they were only found by enumerating every distinct
+    # `namespace:` value in the actual output. Without this, the monitoring
+    # Application spins forever: "one or more synchronization tasks are not
+    # valid: namespace kube-system is not permitted in project
+    # 'observability'".
+    - namespace: kube-system
+      server: https://kubernetes.default.svc
 
   # Enumerated from the actual render (helm template all four sources with
   # the pinned versions and our values files), not guessed — same discipline
