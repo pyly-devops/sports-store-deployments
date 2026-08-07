@@ -139,6 +139,51 @@ prometheusOperator:
       requests: {cpu: 10m, memory: 20Mi}
       limits: {cpu: 50m, memory: 50Mi}
 
+  # -----------------------------------------------------------------------
+  # THE TWO CERT-GENERATION JOBS AND WHY THEY NEED ARGO CD'S OWN HOOK
+  # ANNOTATIONS INSTEAD OF THE CHART'S DEFAULT HELM ONES.
+  #
+  # admission-create/admission-patch ship, by default, only
+  # `helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded`. Argo
+  # CD (Helm-sourced Application) translates that into its own PreSync/
+  # PostSync hook with a HookSucceeded delete policy — but the translated
+  # version races its own sync operation: the Job finishes fast enough that
+  # Argo CD deletes it per policy and then, in the same pass, does a live
+  # GET to record the final resource state and finds it already gone.
+  # Result: "Resource batch/Job/...-admission-create is missing, it might
+  # have been deleted" reported as a SyncFailed error, every single sync —
+  # confirmed live during Tier 2/3 convergence, and confirmed against the
+  # chart source (job-createSecret.yaml / job-patchWebhook.yaml) rather
+  # than guessed.
+  #
+  # The chart ships the fix as a commented-out example in its own default
+  # values, for exactly this scenario: setting `argocd.argoproj.io/hook`
+  # explicitly makes Argo CD use its native hook engine instead of
+  # translating the Helm one, which records the Succeeded state before it
+  # deletes the resource rather than racing the two.
+  #
+  # Rejected: disabling admissionWebhooks entirely. It would remove the
+  # Job, but also removes the only thing that catches a malformed
+  # PrometheusRule (e.g. the MongoDB alert fixed 2026-08-06, above) before
+  # it reaches the operator, on a chart that already had one silent bad
+  # rule slip through once.
+  #
+  # Rejected: admissionWebhooks.certManager.enabled: true. Real
+  # certificates instead of the Job-generated self-signed one, but it
+  # requires cert-manager, which is not installed anywhere in this
+  # cluster — pulling in a whole new component (plus its own memory
+  # budget, tight already per §1) just to dodge a Job hook is a much
+  # bigger change than the two-line annotation fix below.
+  # -----------------------------------------------------------------------
+  admissionWebhooks:
+    annotations:
+      argocd.argoproj.io/hook: PreSync
+      argocd.argoproj.io/hook-delete-policy: HookSucceeded
+    patch:
+      annotations:
+        argocd.argoproj.io/hook: PreSync
+        argocd.argoproj.io/hook-delete-policy: HookSucceeded
+
 # ---------------------------------------------------------------------------
 # Grafana
 # ---------------------------------------------------------------------------
