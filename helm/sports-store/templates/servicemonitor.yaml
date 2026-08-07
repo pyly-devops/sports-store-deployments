@@ -1,0 +1,80 @@
+{{/*
+================================================================================
+  ServiceMonitors — one per service, from the same map as everything else.
+
+  These belong in the APPLICATION chart rather than alongside Prometheus: a
+  ServiceMonitor describes how to scrape a particular service, and that fact
+  belongs with the service. Ranging the same `services` map that
+  services.yaml uses means a service added there is scraped automatically,
+  with no second list to forget to update.
+
+  --------------------------------------------------------------------------
+  TWO THINGS MAKE THIS SILENTLY DO NOTHING. Both are handled, neither is
+  obvious, and both fail with no error message at all.
+  --------------------------------------------------------------------------
+
+  1. THE CRD HAS TO EXIST FIRST.
+
+     `ServiceMonitor` is a CRD installed by kube-prometheus-stack. Rendering
+     one into a cluster that does not have the Prometheus Operator yet fails
+     the whole release with "no matches for kind ServiceMonitor".
+
+     That is why the whole file is behind `metrics.enabled`, which defaults
+     to FALSE in values.yaml and is turned on only in
+     environments/production. A bare `helm install` on minikube — no
+     operator, no CRDs — keeps working untouched.
+
+     `.Capabilities.APIVersions.Has` is the idiomatic guard and is
+     deliberately NOT used. Argo CD renders with `helm template` against no
+     cluster, so the capability check reports the CRD missing even when it is
+     installed — it would disable every ServiceMonitor permanently and look
+     like a chart bug rather than a rendering artefact.
+
+  2. PROMETHEUS HAS TO ACTUALLY SELECT THEM.
+
+     kube-prometheus-stack ships `serviceMonitorSelectorNilUsesHelmValues:
+     true`, which means Prometheus only picks up ServiceMonitors labelled
+     `release: <the kube-prometheus-stack release name>`. Ours are created by
+     a different release, so by default they would be created successfully,
+     appear in `kubectl get servicemonitor`, and be ignored — an empty
+     dashboard with nothing anywhere reporting an error.
+
+     Fixed on the Prometheus side (observability/kube-prometheus-stack/
+     values.yaml sets those selectors to false) rather than by labelling
+     these `release: monitoring`. Labelling here would hard-code the
+     monitoring stack's release name into the application chart, pointing the
+     dependency the wrong way round: the app should not know what the
+     observability stack is called.
+================================================================================
+*/}}
+{{- if .Values.metrics.enabled }}
+{{- range $name, $override := .Values.services }}
+{{- $svc := include "sports-store.svc" (dict "svc" $override "defaults" $.Values.serviceDefaults) | fromYaml }}
+{{- if $svc.metrics.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $name }}
+  labels: {{- include "sports-store.labels" (dict "ctx" $ "name" $name "component" $svc.component) | nindent 4 }}
+spec:
+  selector:
+    # Selects the SERVICE, not the pods — that is the difference between a
+    # ServiceMonitor and a PodMonitor. services.yaml labels each Service with
+    # the full label set, and this matches the one stable key in it.
+    matchLabels: {{- include "sports-store.selectorLabels" (dict "name" $name) | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ $.Release.Namespace }}
+  endpoints:
+    - # The NAMED port from the Service, never a number. The gateway scrapes a
+      # different port from the one it serves traffic on (its metrics come
+      # from a sidecar, not from nginx itself), and naming the port is what
+      # lets one template cover both cases.
+      port: {{ $svc.metrics.portName | default "http" }}
+      path: {{ $svc.metrics.path }}
+      interval: {{ $svc.metrics.interval }}
+      scheme: http
+{{- end }}
+{{- end }}
+{{- end }}

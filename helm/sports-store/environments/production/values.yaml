@@ -70,6 +70,15 @@ ingress:
     # and does not depend on any backend being up.
     alb.ingress.kubernetes.io/healthcheck-path: /
 
+# Milestone 8. ON here and only here, because this is the only cluster that
+# runs kube-prometheus-stack and therefore the only one with the
+# ServiceMonitor CRD. On minikube this stays false and the chart renders no
+# ServiceMonitors at all — see the comment on `metrics` in the root
+# values.yaml for why a missing CRD fails the whole release rather than the
+# one object.
+metrics:
+  enabled: true
+
 mongodbData:
   # gp3 over the gp2 default: cheaper per GiB and its baseline IOPS are not tied
   # to volume size. Requires the EBS CSI driver add-on from Milestone 4.

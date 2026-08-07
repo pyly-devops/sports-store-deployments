@@ -104,6 +104,35 @@ spec:
             {{- toYaml $svc.probes.liveness | nindent 12 }}
           resources: {{- toYaml $svc.resources | nindent 12 }}
           securityContext: {{- toYaml $svc.securityContext | nindent 12 }}
+        {{- if and $svc.metrics $svc.metrics.exporter $svc.metrics.exporter.enabled }}
+        # A sidecar, not a second Deployment, because it scrapes over
+        # LOOPBACK. nginx.conf binds stub_status to 127.0.0.1, and a pod's
+        # localhost is the pod itself — sharing the network namespace is
+        # exactly what makes that reachable here and unreachable everywhere
+        # else. A separate Deployment would need the port opened on the
+        # Service, which is the thing being avoided.
+        - name: nginx-exporter
+          image: {{ $svc.metrics.exporter.image }}
+          args:
+            - --nginx.scrape-uri={{ $svc.metrics.exporter.scrapeUri }}
+          ports:
+            - name: {{ $svc.metrics.portName }}
+              containerPort: {{ $svc.metrics.exporter.port }}
+              protocol: TCP
+          resources: {{- toYaml $svc.metrics.exporter.resources | nindent 12 }}
+          securityContext:
+            # The exporter is a single static Go binary that opens one
+            # outbound HTTP connection and listens on a high port. It needs
+            # none of the capabilities the nginx container next to it does,
+            # so it gets the strict posture the five Python services have
+            # rather than inheriting the gateway's relaxed one.
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -129,6 +158,21 @@ spec:
       # stays true across a delete and reinstall.
       nodePort: {{ $svc.service.nodePort }}
       {{- end }}
+    {{- if and $svc.metrics $svc.metrics.exporter $svc.metrics.exporter.enabled }}
+    # A second port so the ServiceMonitor has a named target to scrape. Only
+    # rendered where a sidecar actually listens on one — the five Python
+    # services serve /metrics from the same port as their API and need no
+    # extra entry here.
+    #
+    # This does NOT widen exposure: the Service is ClusterIP in production and
+    # the Ingress routes only to the `http` port, so 9113 is reachable from
+    # inside the cluster (which is how Prometheus scrapes it) and not from the
+    # ALB.
+    - name: {{ $svc.metrics.portName }}
+      port: {{ $svc.metrics.exporter.port }}
+      targetPort: {{ $svc.metrics.portName }}
+      protocol: TCP
+    {{- end }}
 {{- if $svc.config }}
 ---
 apiVersion: v1

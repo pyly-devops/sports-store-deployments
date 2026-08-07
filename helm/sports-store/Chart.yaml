@@ -8,7 +8,9 @@ type: application
 #              image tags: every service ships on its own cadence and carries
 #              its own <semver>-<git-hash> in values.yaml, so a single
 #              chart-wide appVersion could only ever be a lie about five of them.
-version: 0.1.0
+# 0.2.0: Milestone 8 added templates/servicemonitor.yaml and a metrics sidecar
+# to services.yaml. appVersion is untouched — no application image changed.
+version: 0.2.0
 appVersion: "0.1.0"
 
 keywords: [microservices, fastapi, mongodb, ecommerce]
