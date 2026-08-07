@@ -16,4 +16,4 @@
 services:
   auth-service:
     image:
-      tag: 0.1.0-0120d58
+      tag: 0.1.0-5e33761
