@@ -112,8 +112,25 @@ mongodb:
     enabled: false
 
   resources:
-    requests: {cpu: 250m, memory: 512Mi}
-    limits: {cpu: 1000m, memory: 2Gi}
+    # M8 verification pass (2026-08-07): 512Mi/2Gi was a round-number
+    # guess carried since Milestone 5 with no measurement behind it — a 4x
+    # limit:request overcommit far looser than every other budget in this
+    # project (Prometheus 1.4x, Grafana 2x, kube-state-metrics 2x). Found
+    # while auditing cluster-wide memory during the M8 capacity crunch
+    # (see infrastructure PR #11): not the actual fix for that crunch
+    # (fragmentation, not this, needed a 5th node), but a real gap on its
+    # own once looked at directly.
+    #
+    # Measured live rather than guessed:
+    #   kubectl exec -n sports-store deploy/mongodb -- \
+    #     cat /sys/fs/cgroup/memory.current
+    # returned ~354Mi at rest with the full demo dataset loaded. 384Mi
+    # request leaves headroom above that; 768Mi limit (2x request, this
+    # project's standard ratio) covers WiredTiger cache growth and index
+    # builds without the previous 2Gi ceiling that no measurement ever
+    # justified.
+    requests: {cpu: 250m, memory: 384Mi}
+    limits: {cpu: 1000m, memory: 768Mi}
 
   # KNOWN GAP, carried forward deliberately rather than hidden.
   #
