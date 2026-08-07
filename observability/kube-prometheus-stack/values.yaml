@@ -1,0 +1,392 @@
+# kube-prometheus-stack — Prometheus, Grafana, Alertmanager, kube-state-metrics
+# and node-exporter (Milestone 8).
+#
+# Chart 88.1.5 (app v0.93.0), pinned in argocd/applications/25-monitoring.yaml.
+# Everything here is a values override; nothing is patched after the fact.
+#
+#   Verify a change without a cluster:
+#     helm template monitoring prometheus-community/kube-prometheus-stack \
+#       --version 88.1.5 -n observability -f values.yaml
+
+# ---------------------------------------------------------------------------
+# Prometheus
+# ---------------------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    # 2 days, not 7. This cluster is a t3.small x4 fleet destroyed between
+    # sessions, and the node-count decision (stage8-plan-observability.md §1)
+    # only had 456Mi of spare to work with — a 700Mi Prometheus is the
+    # single largest line in that budget already. Shorter retention on a
+    # smaller volume buys back the memory the node group could not.
+    retention: 2d
+    retentionSize: 6GB # below the 8Gi volume, so the WAL is never squeezed
+
+    # -----------------------------------------------------------------------
+    # THE FIVE LINES WITHOUT WHICH THIS WHOLE MILESTONE SILENTLY DOES NOTHING.
+    #
+    # Each of these defaults to TRUE in the chart, and "NilUsesHelmValues"
+    # means: when the corresponding selector is nil, don't select everything —
+    # select only objects labelled `release: monitoring`.
+    #
+    # Our ServiceMonitors are created by the `sports-store` Helm release, not
+    # this one. Left at the default they would be created successfully, show
+    # up in `kubectl get servicemonitor`, and be ignored by Prometheus. No
+    # error is logged anywhere. The only symptom is an empty dashboard and a
+    # Targets page missing six entries.
+    #
+    # Setting them false means "select every ServiceMonitor/Rule/PodMonitor in
+    # the namespaces I watch", which is what an operator on a single-tenant
+    # cluster actually wants.
+    #
+    # The alternative — labelling our objects `release: monitoring` — was
+    # rejected: it hard-codes this stack's release name into the application
+    # chart, so the app would break if the monitoring release were ever
+    # renamed. The application should not know the observability stack exists.
+    # -----------------------------------------------------------------------
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          # The default StorageClass is already gp3 (deployments PR #6), but it
+          # is named explicitly: a PVC that relies on a cluster-wide default is
+          # one `kubectl patch` away from silently landing on something else,
+          # and this volume is the one holding all the metrics.
+          storageClassName: gp3
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 8Gi
+
+    resources:
+      # Prometheus is the largest single consumer in this stack and the reason
+      # the node group had to grow — see stage8-plan-observability.md §1.
+      # limits: 1Gi, not the 1.5Gi a naive 2x-of-requests would suggest — a
+      # 700Mi/1.5Gi spread is a 2x overcommit that lets the scheduler pack the
+      # node at 700Mi while a query burst climbs to 1.5Gi, tripping node
+      # memory pressure and evicting something unrelated. A tighter ceiling
+      # trades peak headroom for a predictable footprint, which matters more
+      # on a cluster this size.
+      requests: {cpu: 200m, memory: 700Mi}
+      limits: {cpu: 1000m, memory: 1Gi}
+
+  # The three EKS control-plane targets that are unreachable on a managed
+  # cluster (AWS runs them, and exposes no scrape endpoint). Left at their
+  # chart default of `true` these still resolve to zero endpoints/zero
+  # targets/zero series — Memory reclaimed is ~0Mi, this is noise removal —
+  # but their PAIRED default alert rules are written as `absent(up{job=...})`
+  # and fire the moment the ServiceMonitor is created if left on, since the
+  # metric can never exist. kubeApiServer and kubelet ARE reachable on EKS
+  # and stay enabled below (unchanged from the chart default).
+  #
+  # Disabling only one half of this pair is worse than doing neither: turn
+  # the monitor off but leave the rule on, and an alert that used to fire
+  # constantly (absent() flapping) instead fires PERMANENTLY (absent() always
+  # true). Both halves are handled here and in defaultRules.rules below.
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+
+# ---------------------------------------------------------------------------
+# node-exporter, kube-state-metrics, the Prometheus Operator itself.
+#
+# All three ship with `resources: {}` in this chart — confirmed by rendering,
+# not assumed. BestEffort QoS: invisible to the scheduler's accounting (so
+# the node-count arithmetic in §1 would be wrong without this), and first in
+# line to be OOM-killed under any memory pressure. Values match §1's budget
+# exactly (node-exporter 4x30, kube-state-metrics 64, prometheus-operator
+# 100) — the node-count decision was sized against these numbers, so drifting
+# them here would drift the whole capacity argument.
+# ---------------------------------------------------------------------------
+prometheus-node-exporter:
+  resources:
+    requests: {cpu: 25m, memory: 30Mi}
+    limits: {cpu: 50m, memory: 60Mi}
+
+kube-state-metrics:
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {cpu: 100m, memory: 128Mi}
+
+prometheusOperator:
+  resources:
+    requests: {cpu: 50m, memory: 100Mi}
+    limits: {cpu: 200m, memory: 200Mi}
+
+  # NOT the same thing as prometheusOperator.resources above — this is the
+  # config-reloader SIDECAR the operator injects into every Prometheus AND
+  # Alertmanager pod it manages (2 instances total here), and it ships its
+  # own separate `resources: {}` default — found the same way as the three
+  # above, by checking `helm show values` rather than assuming the operator's
+  # own budget covered it. It only watches a mounted file and sends a SIGHUP
+  # on change, so it is deliberately given less than kube-state-metrics.
+  prometheusConfigReloader:
+    resources:
+      requests: {cpu: 10m, memory: 20Mi}
+      limits: {cpu: 50m, memory: 50Mi}
+
+# ---------------------------------------------------------------------------
+# Grafana
+# ---------------------------------------------------------------------------
+grafana:
+  # NO PERSISTENT VOLUME, and that is the design rather than a saving.
+  #
+  # Dashboards and datasources are provisioned from Git — the datasource below
+  # and the dashboard in observability/extras. Grafana therefore holds nothing
+  # that is not reproducible from this repository, and a restart cannot lose
+  # anything.
+  #
+  # It also enforces the brief's "everything provisioned from Git, not clicked
+  # together in the UI" mechanically rather than by asking politely: a
+  # dashboard someone builds by hand in the UI does not survive a pod restart,
+  # so the only way to keep one is to commit it.
+  persistence:
+    enabled: false
+
+  # ClusterIP. Reached with:
+  #   kubectl -n observability port-forward svc/monitoring-grafana 3000:80
+  #
+  # Deliberately NOT behind an Ingress or a second ALB. The brief's own
+  # pre-demo checklist names "Grafana open to the internet with no auth" as a
+  # thing to be caught, and a public ALB would cost money, widen the attack
+  # surface, and need TLS plus real auth before it were defensible. A
+  # port-forward requires cluster credentials to establish at all, which is a
+  # stronger control than anything an ALB gives for free.
+  #
+  # If the team wants a URL for the demo: an internal-scheme ALB plus
+  # grafana.ini auth settings. A values change, no templates move.
+  service:
+    type: ClusterIP
+
+  # The admin password is a credential, so it is NOT in this file. Milestone 7
+  # exists to remove exactly the "kubectl create secret" bootstrap the earlier
+  # draft of this used — the ExternalSecret at
+  # cluster/external-secrets/externalsecret-grafana-admin.yaml creates this
+  # Secret from Secrets Manager's sports-store/prod/app, same as app-secrets
+  # and mongodb-credentials already do.
+  #
+  # Left to the chart's default, Grafana would come up as admin/prom-operator
+  # — a published default credential, which is a finding even behind a
+  # port-forward.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+
+  # The Prometheus datasource is created by the chart itself. This adds Loki
+  # so the dashboard's log panels resolve without anyone configuring a
+  # datasource by hand.
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      # PINNED UID. The dashboard JSON references its datasources by uid, and
+      # a generated one changes between installs — which turns every log panel
+      # into "Datasource not found" after a reinstall.
+      uid: loki
+      access: proxy
+      url: http://loki.observability.svc.cluster.local:3100
+      jsonData:
+        # Matches the retention in observability/loki/values.yaml. Grafana uses
+        # it to avoid offering time ranges Loki cannot answer.
+        maxLines: 1000
+
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 200m, memory: 256Mi}
+
+  # The sidecar that turns ConfigMaps labelled `grafana_dashboard: "1"` into
+  # dashboards is ON by default and already searches all namespaces — the
+  # defaults are correct here, so they are not restated. observability/extras
+  # ships exactly one such ConfigMap.
+  #
+  # Its resources are NOT: rendering shows two k8s-sidecar containers
+  # (grafana-sc-dashboard AND grafana-sc-datasources — the second is what
+  # actually provisions the built-in "Prometheus" datasource our dashboard's
+  # 11 Prometheus panels reference by uid, via `defaultDatasourceEnabled`
+  # above the additionalDataSources block; it cannot be turned off) both
+  # shipping `resources: {}`. Same BestEffort pattern as §3.6, found the same
+  # way — not called out there because it is one level deeper, inside the
+  # grafana subchart rather than this chart's own top level.
+  sidecar:
+    resources:
+      requests: {cpu: 10m, memory: 32Mi}
+      limits: {cpu: 50m, memory: 64Mi}
+
+# ---------------------------------------------------------------------------
+# Alertmanager
+# ---------------------------------------------------------------------------
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi
+    resources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {cpu: 100m, memory: 128Mi}
+
+  config:
+    route:
+      # EVERYTHING GOES TO A NULL RECEIVER, on purpose.
+      #
+      # There is no Slack webhook or PagerDuty key in this repository and there
+      # will not be one: both are credentials, and this project's rule is that
+      # credentials live in Secrets, never in Git.
+      #
+      # "Wired up" therefore means the rules evaluate, the alerts fire, and
+      # they are visible in the Alertmanager and Grafana UIs — which is what
+      # gets demonstrated. Adding a real receiver later is a values change plus
+      # a Secret, and no rule moves.
+      receiver: "null"
+      group_by: [alertname, namespace]
+      group_wait: 30s
+      group_interval: 5m
+      # 4h rather than the usual 12h: on a cluster that only exists for a few
+      # hours at a time, a 12h repeat interval means a firing alert is
+      # announced once and never again.
+      repeat_interval: 4h
+      routes:
+        # Watchdog is the stack's own always-firing alert, whose absence is how
+        # you detect that the alerting pipeline itself has died. It must not be
+        # grouped with real alerts.
+        - matchers: [alertname = "Watchdog"]
+          receiver: "null"
+    receivers:
+      - name: "null"
+
+# ---------------------------------------------------------------------------
+# Alerts (Milestone 8)
+#
+# Shipped through the chart's own additionalPrometheusRulesMap so they live in
+# the same file as the Prometheus that evaluates them, and are rendered as a
+# PrometheusRule the operator already selects.
+#
+# The `job` label below is the SERVICE name: the Prometheus Operator relabels
+# __meta_kubernetes_service_name onto `job` for every ServiceMonitor target.
+# ---------------------------------------------------------------------------
+additionalPrometheusRulesMap:
+  sports-store:
+    groups:
+      - name: sports-store.availability
+        rules:
+          - alert: SportsStoreServiceDown
+            # `up` is synthesised by Prometheus per target, so this fires when
+            # the scrape itself fails — which covers a crashed process, a
+            # wedged event loop and a deleted pod alike, none of which a
+            # request-based metric could report (a dead service serves no
+            # requests to count).
+            expr: up{namespace="sports-store"} == 0
+            for: 2m
+            labels: {severity: critical}
+            annotations:
+              summary: "{{ $labels.job }} is not responding to scrapes"
+              description: "Prometheus has failed to scrape {{ $labels.job }} in {{ $labels.namespace }} for 2 minutes."
+
+          - alert: SportsStoreReplicasUnavailable
+            expr: kube_deployment_status_replicas_unavailable{namespace="sports-store"} > 0
+            # 5m, not 1m: a rolling update makes a replica briefly unavailable
+            # by design, and paging on a normal deploy trains people to ignore
+            # the alert.
+            for: 5m
+            labels: {severity: warning}
+            annotations:
+              summary: "{{ $labels.deployment }} has unavailable replicas"
+              description: "{{ $labels.deployment }} has had at least one unavailable replica for 5 minutes — longer than a rolling update should take."
+
+          - alert: SportsStorePodCrashLooping
+            # increase() over 15m rather than a restart COUNT, which only ever
+            # grows: a pod that crashed twice last week would otherwise alert
+            # forever. This asks "is it crashing now".
+            expr: increase(kube_pod_container_status_restarts_total{namespace="sports-store"}[15m]) > 2
+            for: 5m
+            labels: {severity: critical}
+            annotations:
+              summary: "{{ $labels.pod }} is crash-looping"
+              description: "Container {{ $labels.container }} in {{ $labels.pod }} has restarted more than twice in 15 minutes."
+
+          - alert: SportsStoreMongoDBDown
+            # Milestone 8 verification pass (2026-08-06): the ORIGINAL version
+            # of this rule queried
+            #   kube_statefulset_status_replicas_ready{statefulset="mongodb"}
+            # which can never fire. Bitnami's `architecture: standalone`
+            # renders a Deployment, not a StatefulSet — confirmed live,
+            # `kubectl get deploy,sts -n sports-store` shows
+            # `deployment.apps/mongodb` and no statefulset at all. The
+            # expression matched no series and evaluated to nothing, forever,
+            # with no error anywhere. Fixed to query the Deployment that
+            # actually exists.
+            #
+            # MongoDB is a single standalone replica on one RWO volume — a
+            # known and deliberate single point of failure (see the chart's
+            # production values). It gets its own alert because every one of
+            # the five services fails when it goes, and without this the
+            # symptom is five simultaneous error-rate alerts and no cause.
+            expr: kube_deployment_status_replicas_available{namespace="sports-store", deployment="mongodb"} == 0
+            for: 2m
+            labels: {severity: critical}
+            annotations:
+              summary: "MongoDB has no available replica"
+              description: "Every service depends on this one instance; expect cascading failures."
+
+      - name: sports-store.traffic
+        rules:
+          - alert: SportsStoreHighErrorRate
+            # ---------------------------------------------------------------
+            # 5xx ONLY — NOT "anything that isn't 2xx". This is the one that
+            # would have been wrong.
+            #
+            # payment-service returns HTTP 402 on a declined card, and
+            # order-service propagates it. That is the checkout saga's
+            # DESIGNED failure path, exercised on purpose by any card ending
+            # 0000, and it is a 4xx.
+            #
+            # An alert written as `status != "2xx"` therefore fires every time
+            # the demo shows the decline path working correctly. Counting only
+            # 5xx keeps the alert on "the system is broken" rather than "a
+            # user was told no" — which is exactly the client-error versus
+            # server-error distinction the status grouping preserves.
+            # ---------------------------------------------------------------
+            expr: |
+              sum by (job) (rate(http_requests_total{namespace="sports-store", status="5xx"}[5m]))
+                /
+              sum by (job) (rate(http_requests_total{namespace="sports-store"}[5m]))
+                > 0.05
+            for: 5m
+            labels: {severity: critical}
+            annotations:
+              summary: "{{ $labels.job }} is serving over 5% server errors"
+              description: "5xx responses from {{ $labels.job }} have exceeded 5% of its traffic for 5 minutes. 4xx (including the 402 decline path) is deliberately excluded."
+
+          - alert: SportsStoreHighLatency
+            # p95 rather than an average: an average hides the tail, and the
+            # tail is what a user notices. Computed from the histogram the
+            # instrumentator exports, so `le` must be in the by() clause —
+            # histogram_quantile reads the bucket boundaries from it.
+            expr: |
+              histogram_quantile(
+                0.95,
+                sum by (job, le) (rate(http_request_duration_seconds_bucket{namespace="sports-store"}[5m]))
+              ) > 1
+            for: 10m
+            labels: {severity: warning}
+            annotations:
+              summary: "{{ $labels.job }} p95 latency is above 1s"
+              description: "95th percentile request duration for {{ $labels.job }} has been over 1 second for 10 minutes."

@@ -1,0 +1,80 @@
+# Wave 25: after gp3 (wave 20) — the Prometheus/Alertmanager PVCs name the
+# class — and before sports-store (wave 30), because that chart renders six
+# ServiceMonitors and the CRD this Application installs must exist first.
+# (File is numbered 25 to match its wave for the same reason 30-storageclass
+# is numbered 30 despite being wave 20: M8's own plan document renumbered
+# this from an earlier `60-monitoring.yaml` after that put it after
+# `50-sports-store.yaml` in directory listing order while syncing before it —
+# filename order tracking wave order is the convention being preserved here,
+# not the numeric value matching the wave exactly.)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "25"
+  finalizers:
+    # Without this, deleting the Application orphans every object it
+    # created — including the 8Gi/2Gi/1Gi PVCs that keep billing.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: observability
+
+  # Multi-source: the chart comes from upstream, the values from this repo.
+  # Keeps our configuration reviewable in Git without vendoring a ~600KB
+  # third-party chart into the repository.
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      # Pinned exactly. `latest` is banned project-wide, and for a chart this
+      # large an unpinned version means a sync can rewrite CRDs without
+      # anyone having changed a file.
+      targetRevision: 88.1.5
+      helm:
+        valueFiles:
+          # $values resolves to the ref: source below.
+          - $values/observability/kube-prometheus-stack/values.yaml
+    - repoURL: https://github.com/pyly-devops/sports-store-deployments.git
+      targetRevision: main
+      # `ref` alone means "make this repo available for valueFiles" — it does
+      # NOT render anything from it. Without this the values file above
+      # cannot be addressed at all.
+      ref: values
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      # cluster/namespaces owns namespace creation one wave earlier (wave 0)
+      # — this Application must never try to create it itself.
+      - CreateNamespace=false
+      # REQUIRED FOR THIS CHART SPECIFICALLY.
+      #
+      # Several Prometheus Operator CRDs are larger than the 262144-byte
+      # limit on the last-applied-configuration annotation that client-side
+      # apply writes. Without server-side apply the sync fails with
+      #
+      #   metadata.annotations: Too long: must have at most 262144 bytes
+      #
+      # which reads as a validation error about annotations and gives no
+      # hint that the fix is the apply strategy.
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff: {duration: 15s, factor: 2, maxDuration: 5m}
+
+  # Prometheus rewrites its own replica count after creation (the operator
+  # manages it directly), so a strict diff shows this Application as
+  # permanently OutOfSync without this.
+  ignoreDifferences:
+    - group: monitoring.coreos.com
+      kind: Prometheus
+      jsonPointers:
+        - /spec/replicas

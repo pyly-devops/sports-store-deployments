@@ -1,0 +1,39 @@
+# Wave 36: same wave as Alloy — the dashboard is a ConfigMap that Grafana's
+# sidecar picks up whenever it starts, so it does not strictly need Grafana
+# (wave 25) to exist first. The ordering is for the demo: a dashboard that
+# appears before Grafana does looks like it failed.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observability-extras
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "36"
+  finalizers:
+    # Without this, deleting the Application orphans the ConfigMap it
+    # created (no PVC here — this chart is a single dashboard ConfigMap).
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: observability
+
+  # Single-source: the chart lives in this repo, so there is no upstream to
+  # combine with and no $values indirection needed.
+  source:
+    repoURL: https://github.com/pyly-devops/sports-store-deployments.git
+    targetRevision: main
+    path: observability/extras
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff: {duration: 15s, factor: 2, maxDuration: 5m}

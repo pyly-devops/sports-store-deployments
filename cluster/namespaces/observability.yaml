@@ -1,0 +1,9 @@
+# kube-prometheus-stack, Loki, Alloy and the dashboard ConfigMap all land
+# here — never in `sports-store`, which stays application-scoped only.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    app.kubernetes.io/name: observability
+    app.kubernetes.io/part-of: sports-store-platform

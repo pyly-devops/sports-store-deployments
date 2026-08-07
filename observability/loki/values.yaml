@@ -1,0 +1,146 @@
+# Loki — log storage (Milestone 8).
+#
+# Chart 7.2.0 (Loki 3.6.11), pinned in argocd/applications/60-loki.yaml.
+#
+# ---------------------------------------------------------------------------
+# EVERY OVERRIDE BELOW EXISTS BECAUSE A CHART DEFAULT WOULD BREAK THIS CLUSTER.
+#
+# The Loki chart is built for a production install backed by object storage,
+# and its defaults reflect that. Four of them are individually fatal here, and
+# each fails in a way that does not point at its own cause. They were found by
+# rendering the chart, not by reading its README.
+# ---------------------------------------------------------------------------
+
+# DEFAULT IS `SimpleScalable`, which REQUIRES object storage — the chart's own
+# comment says so. It splits Loki into read/write/backend targets that
+# coordinate through a shared bucket, and filesystem storage is not an option
+# in that mode at all.
+deploymentMode: SingleBinary
+
+loki:
+  # Single tenant. Multi-tenancy would mean every write and query carrying an
+  # X-Scope-OrgID header, which buys isolation between tenants that do not
+  # exist here.
+  auth_enabled: false
+
+  commonConfig:
+    # DEFAULT IS 3. One instance cannot satisfy a replication factor of 3, and
+    # the ring never becomes healthy — Loki starts, reports itself unready, and
+    # accepts nothing.
+    replication_factor: 1
+
+  storage:
+    # DEFAULT IS s3.
+    #
+    # WHY NOT S3, stated as a decision rather than a shortcut: S3-backed Loki
+    # needs a bucket, an IRSA role, a Terraform PR in a repo this milestone
+    # does not own, and an IAM policy — real work, to gain durability of demo
+    # logs across a `terraform destroy` that deletes the entire cluster
+    # anyway. The retention that matters here is measured in hours.
+    #
+    # The exit is a values change and an annotation, not a redesign: set
+    # `type: s3` plus bucketNames here, and an IRSA role ARN on
+    # serviceAccount.annotations. No template moves.
+    type: filesystem
+
+  # DEFAULT IS `{}`, and a real install must supply one. tsdb + v13 is the
+  # current generation; older schemas still work but are slower and are what
+  # the `useTestSchema` escape hatch exists to avoid committing by accident.
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+  limits_config:
+    retention_period: 72h
+    # The five services are chatty at INFO and this is now a 5Gi volume
+    # (down from 10Gi — see singleBinary.persistence.size below). These are
+    # the two limits that stop one misbehaving pod filling it.
+    ingestion_rate_mb: 8
+    ingestion_burst_size_mb: 16
+
+  compactor:
+    # RETENTION DOES NOTHING WITHOUT THIS. `retention_period` above only
+    # declares intent; the compactor is the component that actually deletes
+    # expired chunks. Set the period alone and Loki keeps everything until the
+    # PVC fills, then starts refusing writes — with the configuration still
+    # reading as though retention were enforced.
+    retention_enabled: true
+    delete_request_store: filesystem
+
+singleBinary:
+  # DEFAULT IS 0. Setting deploymentMode above is not enough on its own: the
+  # StatefulSet renders with zero replicas, the install reports success, and
+  # nothing runs.
+  replicas: 1
+  persistence:
+    enabled: true
+    # 5Gi, not 10 — stage8-plan-observability.md §1/§3.7. The 4-node budget
+    # had 456Mi of spare after this and every other line in the stack; halving
+    # this PVC (and the request below) was part of making that budget work,
+    # not a storage-cost optimisation.
+    size: 5Gi
+    storageClass: gp3
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: 500m, memory: 512Mi}
+
+# ---------------------------------------------------------------------------
+# The two memcached deployments, both ON by default.
+#
+# chunksCache alone requests allocatedMemory: 8192 — an 8 GiB memcached. On a
+# 16 GiB cluster it is permanently Pending, and the event names memcached
+# rather than Loki, so the obvious place to look is the wrong one.
+#
+# Caching earns its keep at query volumes this cluster will never see.
+# ---------------------------------------------------------------------------
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# SimpleScalable's targets, explicitly zeroed.
+#
+# deploymentMode already stops these rendering, so this is belt and braces —
+# but it is cheap, and a stray read/write/backend pod on this node group is
+# the difference between the stack fitting and not.
+# ---------------------------------------------------------------------------
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
+
+# ON by default (a k8s-sidecar watching ConfigMaps/Secrets labelled
+# loki_rule, to feed Loki's own ruler — LogQL-based alerting). Nothing in
+# this milestone uses it: every alert is Prometheus-side, in
+# kube-prometheus-stack/values.yaml's additionalPrometheusRulesMap. Rendered
+# with the chart default it is a `loki-sc-rules` container with no resource
+# request — disabling an unused component beats budgeting for it.
+sidecar:
+  rules:
+    enabled: false
+
+# A synthetic log producer that continuously writes and reads back entries to
+# prove Loki is healthy. Useful when Loki is the product; here it is a pod
+# whose entire output is noise in the very logs being demonstrated.
+lokiCanary:
+  enabled: false
+
+# Helm test pods. Nothing runs `helm test` in this project — Argo CD syncs the
+# chart — so these would be created and never invoked.
+test:
+  enabled: false
+
+# The chart's own nginx gateway, which fronts Loki to give the microservice
+# deployment modes a single address. SingleBinary already IS a single address,
+# so this would be an extra nginx pod proxying to one backend.
+gateway:
+  enabled: false
