@@ -55,3 +55,18 @@ spec:
 
   orphanedResources:
     warn: true
+    ignore:
+      # kube-prometheus-stack's admission-create/admission-patch Jobs generate
+      # the webhook serving cert at install time and write it here. It is
+      # runtime state by design — it can never be in git, so warning about it
+      # forever is a warning nobody can ever action.
+      #
+      # This is the ONLY entry needed. Argo CD already ignores the other
+      # untracked objects in these namespaces (ConfigMap/kube-root-ca.crt,
+      # ServiceAccount/default, sh.helm.release.v1.* Secrets) on its own —
+      # confirmed by the sports-store namespace, which holds all three and
+      # reports no orphan warning at all. Listing them here would be dead
+      # config that reads like it is doing something.
+      - group: ""
+        kind: Secret
+        name: monitoring-kube-prometheus-admission
