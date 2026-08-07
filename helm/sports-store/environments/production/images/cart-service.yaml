@@ -16,4 +16,4 @@
 services:
   cart-service:
     image:
-      tag: 0.1.0-46d2d10
+      tag: 0.1.0-422295c
